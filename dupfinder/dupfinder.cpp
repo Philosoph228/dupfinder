@@ -5,10 +5,8 @@
 #include <CommCtrl.h>
 #include <shellapi.h>
 #include <Shlwapi.h>
-#include <Uxtheme.h>
 #include <iostream>
 #include <filesystem>
-#include <unordered_map>
 #include <fstream>
 #include <vector>
 #include <openssl/sha.h> // Requires OpenSSL for SHA-256 hashing
@@ -20,9 +18,7 @@
 #include <map>
 #include <string>
 #include <algorithm>
-#include <mutex>
 #include <shared_mutex>
-
 
 namespace fs = std::filesystem;
 
@@ -67,7 +63,7 @@ std::wstring compute_file_hash(const fs::path& file_path, std::function<void(std
 }
 
 // Function to find duplicate files by hash
-std::unordered_map<std::wstring, std::vector<fs::path>> find_duplicate_files(const fs::path& root, std::function<void(std::wstring)> logCallback = [](std::wstring){}) {
+std::unordered_map<std::wstring, std::vector<fs::path>> find_duplicate_files(const fs::path& root, std::function<void(std::wstring)> logCallback = [](std::wstring) {}) {
     std::unordered_map<std::wstring, std::vector<fs::path>> hash_to_files;
 
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
@@ -95,8 +91,6 @@ std::unordered_map<std::wstring, std::vector<fs::path>> find_duplicate_files(con
 
     return hash_to_files;
 }
-
-const WCHAR szClassName[] = L"WindowClass";
 
 BOOL InitInstance(HINSTANCE hInstance) {
     return TRUE;
@@ -269,76 +263,6 @@ HBITMAP GetThumbnail(const std::wstring& filePath, SIZE size) {
     return hThumbnail;
 }
 
-HWND g_hEditFolderPath;
-HWND g_hListResults;
-
-HIMAGELIST hImageList;
-
-void InitListView(HWND hwndListView) {
-    
-    // Enable Explorer-style theme
-    SetWindowTheme(hwndListView, L"Explorer", NULL);
-
-    // Enable grouping in the ListView
-    ListView_SetExtendedListViewStyle(hwndListView, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    ::SendMessage(hwndListView, LVM_ENABLEGROUPVIEW, TRUE, 0);
-
-    hImageList = ImageList_Create(96, 96, ILC_COLOR32 | ILC_MASK, 1, 1);
-    ListView_SetImageList(hwndListView, hImageList, LVSIL_NORMAL);
-
-    const int horizontalSpacing = 128;
-    const int verticalSpacing = 128;
-    ListView_SetIconSpacing(hwndListView, horizontalSpacing, verticalSpacing);
-
-    LVCOLUMN lvc{};
-    lvc.mask = LVCF_TEXT | LVCF_WIDTH;
-    lvc.pszText = const_cast<PWSTR>(L"Name");
-    lvc.cx = 640;
-    ListView_InsertColumn(hwndListView, 0, &lvc);
-}
-
-int g_groupId = 1;
-
-int CreateDuplicateGroup(HWND hwndListView, std::wstring hash) {
-    LVGROUP group;
-    group.cbSize = sizeof(LVGROUP);
-    group.mask = LVGF_HEADER | LVGF_GROUPID;
-    group.pszHeader = const_cast<PWSTR>(hash.c_str());
-    group.iGroupId = g_groupId + 1;
-    ::SendMessage(hwndListView, LVM_INSERTGROUP, 0, (LPARAM)&group);
-
-    ++g_groupId;
-    return group.iGroupId;
-}
-
-
-int g_item;
-void AddDuplicateFileItem(HWND hwndListView, std::wstring path, int iGroupId) {
-
-    SIZE size = { 96, 96 };
-    HBITMAP hBitmap = GetThumbnail(path, size);
-
-    if (hBitmap) {
-        // Add the thumbnail to the ImageList
-        int imageIndex = ImageList_Add(hImageList, hBitmap, nullptr);
-        ::DeleteObject(hBitmap);
-
-        // Add item to Group 1
-        LVITEM item{};
-        item.mask = LVIF_TEXT | LVIF_GROUPID | LVIF_IMAGE;
-        item.iItem = ListView_GetItemCount(hwndListView);
-        item.pszText = const_cast<PWSTR>(path.c_str());
-        item.iGroupId = iGroupId;
-        item.iImage = imageIndex;
-        ListView_InsertItem(hwndListView, &item);
-    }
-}
-
-void AddItemsToListView(HWND hwndListView) {
-    
-}
-
-
 #pragma pack(push, 1)
 typedef struct tagDLGTEMPLATEEX__1 {
     WORD dlgVer;
@@ -498,7 +422,6 @@ void* ReadDlgItemTemplateEx(void* buffer, DLGITEMTEMPLATEEX* dlgItemTemplateEx) 
     return head;
 }
 
-
 #define RECTWIDTH(x)((x)->right - (x)->left)
 #define RECTHEIGHT(x)((x)->bottom - (x)->top)
 
@@ -515,14 +438,6 @@ void OpenFileLocation(std::wstring path) {
 struct DirectoryEntry {
     HANDLE m_handle;
     std::vector<std::wstring> m_files;
-};
-
-struct OverlappedContext : OVERLAPPED {
-    OVERLAPPED overlapped;
-    fs::path dir;
-    DirectoryEntry dirEntry;
-    std::function<void(fs::path)> callback;
-    char buffer[1024];
 };
 
 constexpr int BUFFER_SIZE = 1024;
@@ -584,7 +499,7 @@ public:
                 pCustomOverlapped->dirEntry = &m_directories[dir];
 
                 // pCustomOverlapped->hEvent = hDirectory;
-                
+
                 // If the function succeeds, the return value is nonzero
                 if (!::ReadDirectoryChangesW(
                     hDirectory,
@@ -601,7 +516,7 @@ public:
                     delete pCustomOverlapped;
                     throw std::runtime_error(std::format("Failed to read directory changes. Error code: {}", ::GetLastError()));
                 }
-            }                        
+            }
         }
         else {
             throw std::runtime_error("FileWatcher: Added path is not a file");
@@ -634,7 +549,7 @@ public:
 
                 if (dwBytesTransferred > 0) {
                     /*
-                    «‡ÎÓ˜ËÚ¸ Ï¸˛ÚÂÍÒ, ÔÓ‚ÂËÚ¸ ˜ÚÓ dirEntry ÒÛ˘ÂÒÚ‚ÛÂÚ
+                    –ó–∞–ª–æ—á–∏—Ç—å –º—å—é—Ç–µ–∫—Å, –ø—Ä–æ–≤–µ—Ä–∏—Ç—å —á—Ç–æ dirEntry —Å—É—â–µ—Å—Ç–≤—É–µ—Ç
                     */
                     std::shared_lock<std::shared_mutex> lock(m_mapMutex);
 
@@ -643,26 +558,43 @@ public:
                     do {
                         std::wstring changedFile(pNotify->FileName, pNotify->FileNameLength / sizeof(WCHAR));
 
-                        // Using std::find to check if changed file name exists in dirEntry
-                        auto& dirEntry = pCustomOverlapped->dirEntry;
-                        auto& files = dirEntry->m_files;
+                        switch (pNotify->Action) {
+                        case FILE_ACTION_REMOVED: {
+                            // Using std::find to check if changed file name exists in dirEntry
+                            auto& dirEntry = pCustomOverlapped->dirEntry;
+                            auto& files = dirEntry->m_files;
 
-                        auto it = std::find(files.begin(), files.end(), changedFile);
-                        if (it != files.end()) {
-                            fs::path fullPath = pCustomOverlapped->directory / *it;
-                            if (::GetFileAttributes(fullPath.wstring().c_str()) == INVALID_FILE_ATTRIBUTES && ::GetLastError() == ERROR_FILE_NOT_FOUND) {
-                                m_callback(fullPath);
+                            auto it = std::find(files.begin(), files.end(), changedFile);
+                            if (it != files.end()) {
+                                fs::path fullPath = pCustomOverlapped->directory / *it;
+                                if (::GetFileAttributes(fullPath.wstring().c_str()) == INVALID_FILE_ATTRIBUTES && ::GetLastError() == ERROR_FILE_NOT_FOUND) {
+                                    m_callback(fullPath);
 
-                                // Remove deleted file from list
-                                files.erase(it);
+                                    // Remove deleted file from list
+                                    files.erase(it);
 
-                                // Close directory handle if there no files left
-                                if (files.empty()) {
-                                    ::CloseHandle(dirEntry->m_handle);
-                                    m_directories.erase(pCustomOverlapped->directory);
-                                    continue;
+                                    // Close directory handle if there no files left
+                                    if (files.empty()) {
+                                        ::CloseHandle(dirEntry->m_handle);
+                                        m_directories.erase(pCustomOverlapped->directory);
+                                        continue;
+                                    }
                                 }
                             }
+                        }
+                                                break;
+
+                        case FILE_ACTION_RENAMED_OLD_NAME: {
+                            auto message = std::format(L"File renamed. Old name: {}", changedFile);
+                            ::MessageBox(nullptr, message.c_str(), L"Information", MB_OK | MB_ICONERROR);
+                        }
+                                                         break;
+
+                        case FILE_ACTION_RENAMED_NEW_NAME: {
+                            auto message = std::format(L"File renamed. New name: {}", changedFile);
+                            ::MessageBox(nullptr, message.c_str(), L"Information", MB_OK | MB_ICONERROR);
+                        }
+                                                         break;
                         }
 
                         pNotify = pNotify->NextEntryOffset
@@ -700,116 +632,635 @@ private:
     std::function<void(fs::path)> m_callback;
 };
 
+FileWatcher g_fileWatcher;
 
-void WatchDirectory(const std::wstring& directoryPath, const std::wstring& fileName) {
-    HANDLE hDirectory = ::CreateFile(
-        directoryPath.c_str(),
-        FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-        nullptr);
+class DynamicDLL {
+public:
+    // Delete copy cosntructor and assigment operator
+    DynamicDLL(const DynamicDLL&) = delete;
+    DynamicDLL& operator=(const DynamicDLL&) = delete;
 
-    if (hDirectory == INVALID_HANDLE_VALUE) {
-        ::MessageBox(nullptr, L"Failed to open directory handle.", L"Error", MB_OK | MB_ICONERROR);
-        return;
+    // Default move constructor and assigment operator
+    DynamicDLL(DynamicDLL&&) noexcept = default;
+    DynamicDLL& operator=(DynamicDLL&&) noexcept = default;
+
+    explicit DynamicDLL(std::wstring name, bool load = false) : m_name(name), m_hModule(nullptr) {
+        if (load) {
+            Load();
+        }
     }
 
-    char buffer[1024];
-    DWORD bytesReturned;
-
-    while (true) {
-        OVERLAPPED overlapped{};
-        overlapped.hEvent = hDirectory;
-
-        
+    virtual ~DynamicDLL() {
+        Release();
     }
 
-    CloseHandle(hDirectory);
+    void Load() {
+        if (m_hModule) {
+            throw std::logic_error("Library already loaded");
+        }
+
+        HMODULE hModule = ::LoadLibrary(m_name.c_str());
+        if (!hModule) {
+            throw std::runtime_error("Failed to load library");
+        }
+
+        m_hModule = hModule;
+    }
+
+    void Release() {
+        if (m_hModule) {
+            ::FreeLibrary(m_hModule);
+            m_hModule = nullptr;
+        }
+    }
+
+    template<typename T, typename... Args>
+    auto CallOnce(std::string name, Args&&... args) -> typename std::invoke_result<T, Args...>::type {
+        auto fn = LoadFunction<T>(name);
+        return fn(std::forward<Args>(args)...);
+    }
+
+    template<typename T>
+    T LoadFunction(std::string name) const {
+        if (!m_hModule) {
+            throw std::logic_error("Library not loaded");
+        }
+
+        FARPROC proc = ::GetProcAddress(m_hModule, name.c_str());
+        if (!proc) {
+            throw std::runtime_error("Function not found");
+        }
+
+        return reinterpret_cast<T>(proc);
+    }
+
+    [[nodiscard]] bool IsLoaded() const noexcept {
+        return m_hModule != nullptr;
+    }
+
+private:
+    HMODULE m_hModule;
+    std::wstring m_name;
+};
+
+class Window;
+
+class WindowMap {
+public:
+    Window* GetWindow(HWND hwnd) const;
+
+    void Add(HWND hwnd, Window* window);
+    void Clear();
+    void Remove(HWND hwnd);
+    void Remove(Window* window);
+
+    static WindowMap& Instance();
+
+private:
+    std::map<HWND, Window*> m_windowMap;
+};
+
+class DynamicLayoutItem;
+class DynamicLayoutData;
+
+class DynamicLayout {
+public:
+    struct MoveSettings {
+        MoveSettings() : m_nXRatio(0), m_nYRatio(0) {}
+
+        bool IsHorizontal() const { return m_nXRatio > 0; }
+        bool IsVertical() const { return m_nYRatio > 0; }
+        bool IsNone() const { return !IsHorizontal() && !IsVertical(); };
+
+        int m_nXRatio;
+        int m_nYRatio;
+    };
+
+    struct SizeSettings {
+        SizeSettings() : m_nXRatio(0), m_nYRatio(0) {}
+
+        bool IsHorizontal() const { return m_nXRatio > 0; }
+        bool IsVertical() const { return m_nYRatio > 0; }
+        bool IsNone() const { return !IsHorizontal() && !IsVertical(); };
+
+        int m_nXRatio;
+        int m_nYRatio;
+    };
+
+public:
+    DynamicLayout() : m_pHostWnd(nullptr) {}
+    virtual ~DynamicLayout() = default;
+
+    BOOL Create(Window* pHostWnd);
+    UINT AdjustItemRect(const DynamicLayoutItem& item, RECT& rc);
+    void Adjust();
+    BOOL AddItem(HWND hWnd, MoveSettings moveSettings, SizeSettings sizeSettings);
+    DynamicLayoutItem* FindItem(HWND hWnd);
+    BOOL PrepareItem(DynamicLayoutItem& item) const;
+    RECT GetItemRect(DynamicLayoutItem& item) const;
+
+    // This method the dynamic layout from AFX_DIALOG_LAYOUT resource and then applies the layout to the host window.
+    static BOOL LoadResource(Window* pHostWnd, PVOID pResource, DWORD dwSize);
+
+private:
+    std::vector<DynamicLayoutItem*> m_listWnd;
+    HWND m_hwnd;
+    Window* m_pHostWnd;
+};
+
+struct DynamicLayoutItem {
+public:
+    struct Point {
+        Point() : x(0.0), y(0.0) {}
+        double x;
+        double y;
+    };
+
+    DynamicLayoutItem(
+        HWND hWnd,
+        const DynamicLayout::MoveSettings& moveSettings,
+        const DynamicLayout::SizeSettings& sizeSettings
+    ) : hwnd(hWnd),
+        m_moveSettings(moveSettings),
+        m_sizeSettings(sizeSettings) {
+    };
+
+    HWND hwnd;
+    Point m_ptInit;
+    Point m_szInit;
+    DynamicLayout::MoveSettings m_moveSettings;
+    DynamicLayout::SizeSettings m_sizeSettings;
+    double x;
+};
+
+class DynamicLayoutData {
+public:
+    struct Item {
+        DynamicLayout::MoveSettings m_moveSettings;
+        DynamicLayout::SizeSettings m_sizeSettings;
+    };
+
+    void CleanUp();
+    BOOL ReadResource(PVOID pResource, UINT nSize);
+    BOOL ApplyLayoutDataTo(Window* pHostWnd, BOOL bUpdate);
+
+protected:
+    std::vector<Item> m_listCtrls;
+};
+
+/******************
+ * Implementation *
+ ******************/ 
+
+class Window {
+public:
+    virtual ~Window();
+
+    void Attach(HWND hwnd);
+    HWND Detach();
+    void Destroy();
+    BOOL IsWindow() const;
+    LRESULT SendMessage(UINT message, WPARAM wParam, LPARAM lParam) const;
+    BOOL Show(int cmd_show = SW_SHOWNORMAL) const;
+
+    HWND GetHWND() const;
+    void SetHWND(HWND hwnd);
+
+    void ScreenToClient(PRECT pRect) const {
+        if (!(m_hwnd && ::IsWindow(m_hwnd))) {
+            throw;
+        }
+        ::ScreenToClient(m_hwnd, (PPOINT)pRect);
+        ::ScreenToClient(m_hwnd, ((PPOINT)pRect) + 1);
+    }
+
+    BOOL SetPosition(HWND hwndInsertAfter, int x, int y, int w, int h, UINT flags) const;
+
+    DWORD GetStyle() const;
+    DWORD SetStyle(DWORD dwStyle) const;
+    BOOL ModifyStyle(DWORD dwRemove, DWORD dwAdd, UINT nFlags = 0) const;
+
+    DWORD GetExStyle() const;
+
+    std::wstring GetText() const;
+    LRESULT SetText(PCWSTR text) const;
+    LRESULT SetText(const std::wstring& text) const;
+
+    int GetTextLength() const;
+
+    // Dynamic layout
+    DynamicLayout* GetDynamicLayout();
+    void EnableDynamicLayout(bool enable = true);
+    void ResizeDynamicLayout();
+    BOOL LoadDynamicLayoutResource(PCWSTR pszResourceName);
+    BOOL InitDynamicLayout();
+    bool IsDynamicLayoutEnabled() const;
+
+    LRESULT DefaultWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    virtual LRESULT WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+protected:
+    virtual BOOL OnCommand(WPARAM wParam, LPARAM lParam);
+    virtual void OnCreate(HWND hwnd, LPCREATESTRUCT lpcs);
+    virtual BOOL OnDestroy();
+    virtual void OnSize(UINT message, UINT type, SIZE size);
+    HFONT m_hFont;
+    HWND m_hwnd;
+    WNDPROC m_pfnPrevWindowProc;
+
+private:
+    void Subclass(HWND hwnd);
+    void UnSubclass();
+    DynamicLayout* m_pDynamicLayout;
+    static Window* m_currentWindow;
+};
+
+class Dialog : public Window {
+public:
+    virtual ~Dialog();
+    INT_PTR Create(UINT resource_id, HWND parent, bool modal);
+    virtual void EndDialog(INT_PTR result);
+    HWND GetDlgItem(int id_item) const;
+
+protected:
+    virtual void OnCancel();
+    virtual BOOL OnClose();
+    virtual BOOL OnInitDialog();
+    virtual void OnOK();
+    INT_PTR DlgProcDefault(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+    virtual INT_PTR DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+
+private:
+    static INT_PTR CALLBACK StaticDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+    bool m_modal;
+    int m_resourceId;
+
+protected:
+    using Window::m_hwnd;
+};
+
+Window* WindowMap::GetWindow(HWND hwnd) const {
+    auto it = m_windowMap.find(hwnd);
+    return it != m_windowMap.end() ? it->second : nullptr;
 }
 
-void ShowShellContextMenu(HWND hWnd, const std::wstring& filePath, POINT pt) {
-    IShellItem* pShellItem = nullptr;
+void WindowMap::Add(HWND hwnd, Window* window) {
+    if (hwnd && !GetWindow(hwnd)) {
+        m_windowMap.insert(std::make_pair(hwnd, window));
+    }
+}
 
-    // Create a shell item for the file
-    HRESULT hr = ::SHCreateItemFromParsingName(filePath.c_str(), nullptr, IID_PPV_ARGS(&pShellItem));
-    if (SUCCEEDED(hr)) {
-        IContextMenu* pContextMenu = nullptr;
+void WindowMap::Clear() {
+    for (const auto& pair : m_windowMap) {
+        const HWND hwnd = pair.first;
+        if (::IsWindow(hwnd)) {
+            ::DestroyWindow(hwnd);
+        }
+    }
+    m_windowMap.clear();
+}
 
-        // Get the IContextMenu interface
-        hr = pShellItem->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&pContextMenu));
+void WindowMap::Remove(HWND hwnd) {
+    m_windowMap.erase(hwnd);
+}
+
+void WindowMap::Remove(Window* window) {
+    for (auto it = m_windowMap.begin(); it != m_windowMap.end(); ++it) {
+        if (window == it->second) {
+            m_windowMap.erase(it);
+            return;
+        }
+    }
+}
+
+WindowMap& WindowMap::Instance() {
+    static WindowMap instance;
+    return instance;
+}
+
+class ImageList {
+public:
+    ImageList() : m_hImageList(nullptr) {};
+
+    ~ImageList() {
+        Destroy();
+    };
+
+    void operator=(const HIMAGELIST image_list) {
+        SetHandle(image_list);
+    }
+
+    int AddBitmap(HBITMAP bitmap, COLORREF mask) const {
+        if (mask != CLR_NONE) {
+            return ::ImageList_AddMasked(m_hImageList, bitmap, mask);
+        }
+        else {
+            return ::ImageList_Add(m_hImageList, bitmap, nullptr);
+        }
+    }
+
+    bool Create(int cx, int cy) {
+        Destroy();
+        m_hImageList = ::ImageList_Create(cx, cy, ILC_COLOR32 | ILC_MASK, 0, 0);
+        return !!m_hImageList;
+    }
+
+    void Destroy() {
+        if (m_hImageList) {
+            ::ImageList_Destroy(m_hImageList);
+            m_hImageList = nullptr;
+        }
+    }
+
+    BOOL Remove(int index) const {
+        return ::ImageList_Remove(m_hImageList, index);
+    }
+
+    HIMAGELIST GetHandle() const {
+        return m_hImageList;
+    }
+
+    void SetHandle(HIMAGELIST image_list) {
+        Destroy();
+
+        m_hImageList = image_list;
+    }
+
+private:
+    HIMAGELIST m_hImageList;
+};
+
+class ListView : public Window {
+public:
+    int InsertColumn(int index, int width, int width_min, int align, PCWSTR text) {
+        if (!(m_hwnd && ::IsWindow(m_hwnd))) {
+            throw std::runtime_error("Invalid window handle");
+        }
+
+        // If index is -1 and below, get column count and insert column as last column at the end
+        if (index < 0) {
+            HWND hHeader = reinterpret_cast<HWND>(::SendMessage(m_hwnd, LVM_GETHEADER, 0, 0));
+            if (!hHeader) {
+                throw std::runtime_error("Unable to get ListView header window handle. Can't count columns.");
+                return 0;
+            }
+            index = ::SendMessage(hHeader, HDM_GETITEMCOUNT, 0, 0);
+        }
+
+        LVCOLUMN lvc{};
+        lvc.cx = width;
+        lvc.cxMin = width_min;
+        lvc.fmt = align;
+        lvc.mask = LVCF_FMT | LVCF_TEXT | LVCF_WIDTH | (width_min ? LVCF_MINWIDTH : 0);
+        lvc.pszText = const_cast<PWSTR>(text);
+        return ListView_InsertColumn(m_hwnd, index, &lvc);
+    }
+
+    int InsertGroup(int index, PCWSTR text, bool collapsable, bool collapsed) {
+        LVGROUP lvg{};
+        lvg.cbSize = sizeof(lvg);
+        lvg.iGroupId = index;
+        lvg.mask = LVGF_HEADER | LVGF_GROUPID;
+        lvg.pszHeader = const_cast<PWSTR>(text);
+
+        if (collapsable) {
+            lvg.mask |= LVGF_STATE;
+            lvg.state - LVGS_COLLAPSIBLE;
+            if (collapsed) {
+                lvg.state |= LVGS_COLLAPSED;
+            }
+        }
+
+        return ListView_InsertGroup(m_hwnd, index, &lvg);
+    }
+
+    int InsertItem(const LVITEM& lvi) {
+        return ListView_InsertItem(m_hwnd, &lvi);
+    }
+
+    int InsertItem(int item, int group, int image, UINT column_count,
+        PUINT columns, LPCWSTR text, LPARAM lParam) {
+        LVITEM lvi = { 0 };
+        lvi.cColumns = column_count;
+        lvi.iGroupId = group;
+        lvi.iImage = image;
+        lvi.iItem = item;
+        lvi.lParam = lParam;
+        lvi.puColumns = columns;
+        lvi.pszText = const_cast<LPWSTR>(text);
+
+        if (column_count != 0)
+            lvi.mask |= LVIF_COLUMNS;
+        if (group > -1)
+            lvi.mask |= LVIF_GROUPID;
+        if (image > -1)
+            lvi.mask |= LVIF_IMAGE;
+        if (lParam != 0)
+            lvi.mask |= LVIF_PARAM;
+        if (text != nullptr)
+            lvi.mask |= LVIF_TEXT;
+
+        return ListView_InsertItem(m_hwnd, &lvi);
+    }
+
+    void SetImageList(HIMAGELIST image_list, int type) {
+        ListView_SetImageList(m_hwnd, image_list, type);
+    }
+
+    void GetItemText(int item, int subitem, LPWSTR output, int max_length) {
+        ListView_GetItemText(m_hwnd, item, subitem, output, max_length);
+    }
+
+    int SetView(DWORD view) {
+        return ListView_SetView(m_hwnd, view);
+    }
+
+    void SetExplorerTheme() {
+        if (!(m_hwnd && ::IsWindow(m_hwnd))) {
+            throw std::runtime_error("Invalid window handle");
+        }
+
+        auto uxtheme = DynamicDLL(L"uxtheme.dll", true);
+        uxtheme.CallOnce<HRESULT(__stdcall*)(HWND, PCWSTR, PCWSTR)>("SetWindowTheme", m_hwnd, L"Explorer", nullptr);
+    }
+
+    void SetIconSpacing(int horizontal, int vertical) {
+        if (!(m_hwnd && ::IsWindow(m_hwnd))) {
+            throw std::runtime_error("Invalid window handle");
+        }
+
+        ListView_SetIconSpacing(m_hwnd, horizontal, vertical);
+    }
+
+    void EnableGroupView(bool flag) const {
+        if (!(m_hwnd && ::IsWindow(m_hwnd))) {
+            throw std::runtime_error("Invalid window handle");
+        }
+
+        ::SendMessage(m_hwnd, LVM_ENABLEGROUPVIEW, static_cast<BOOL>(flag), 0);
+    }
+};
+
+class Edit : public Window {
+public:
+    void AppendText(std::wstring text) {
+        int len = GetTextLength();
+        ::SendMessage(m_hwnd, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+        ::SendMessage(m_hwnd, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());
+    }
+};
+
+class DuplicateFilesListView : public ListView {
+    int m_nextGroupId = 0;
+    int m_nextItemId = 0;
+
+    ImageList m_imageList;
+public:
+    void Attach(HWND hwnd) {
+        ListView::Attach(hwnd);
+        InitListView();
+    }
+
+    int InsertDuplicateGroup(std::wstring hash) {
+        int insertedIndex = InsertGroup(m_nextGroupId, hash.c_str(), false, false);
+        if (insertedIndex >= 0)
+            m_nextGroupId = insertedIndex + 1;
+        return insertedIndex;
+    }
+
+    int InsertDuplicateFileItem(std::wstring path, int iGroupId) {
+        SIZE size = { 96, 96 };
+        HBITMAP hBitmap = GetThumbnail(path, size);
+
+        int insertedItem = 0;
+        if (hBitmap) {
+            // Add the thumbnail to the ImageList
+            int imageIndex = m_imageList.AddBitmap(hBitmap, CLR_NONE);
+            ::DeleteObject(hBitmap);
+            insertedItem = InsertItem(m_nextItemId, iGroupId, imageIndex, -1, nullptr, path.c_str(), 0);
+            if (insertedItem >= 0) {
+                m_nextItemId = insertedItem + 1;
+            }
+        }
+
+        return insertedItem;
+    }
+
+    void OpenShellMenuForItem(int index, POINT pt) {
+        std::wstring filePath(MAX_PATH, L'\0');
+        GetItemText(index, 0, &filePath[0], MAX_PATH);
+
+        IShellItem* pShellItem = nullptr;
+
+        // Create a shell item for the file
+        HRESULT hr = ::SHCreateItemFromParsingName(filePath.c_str(), nullptr, IID_PPV_ARGS(&pShellItem));
         if (SUCCEEDED(hr)) {
-            HMENU hMenu = ::CreatePopupMenu();
-            if (hMenu) {
-                // Query for the default menu options
-                hr = pContextMenu->QueryContextMenu(hMenu, 0, 1, 0x7FFF, CMF_NORMAL);
-                if (SUCCEEDED(hr)) {
+            IContextMenu* pContextMenu = nullptr;
 
-                    // Add a separator and custom menu items
-                    
-                    InsertMenu(hMenu, 0, MF_BYPOSITION | MF_STRING, 0x8000, L"Open File locationÖ");
-                    InsertMenu(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            // Get the IContextMenu interface
+            hr = pShellItem->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&pContextMenu));
+            if (SUCCEEDED(hr)) {
+                HMENU hMenu = ::CreatePopupMenu();
+                if (hMenu) {
+                    // Query for the default menu options
+                    hr = pContextMenu->QueryContextMenu(hMenu, 0, 1, 0x7FFF, CMF_NORMAL);
+                    if (SUCCEEDED(hr)) {
 
-                    // Display the menu
-                    int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+                        // Add a separator and custom menu items
 
-                    if (cmd > 0) {
-                        if (cmd >= 0x8000 && cmd <= 0x8001) {
-                            // Handle custom actions
-                            if (cmd == 0x8000) {
-                                OpenFileLocation(filePath);
-                            }
-                            else if (cmd == 0x8001) {
-                                MessageBox(hWnd, L"Custom Action 2 executed!", L"Custom Menu", MB_OK);
-                            }
-                        }
-                        else {
-                            // Execute the shell command
-                            // Execute the selected command
-                            CMINVOKECOMMANDINFOEX cmi{};
-                            cmi.cbSize = sizeof(cmi);
-                            cmi.fMask = CMIC_MASK_UNICODE;
-                            cmi.hwnd = hWnd;
-                            cmi.lpVerb = MAKEINTRESOURCEA(cmd - 1);
-                            cmi.lpVerbW = MAKEINTRESOURCEW(cmd - 1);
-                            cmi.nShow = SW_NORMAL;
+                        InsertMenu(hMenu, 0, MF_BYPOSITION | MF_STRING, 0x8000, L"Open File location‚Ä¶");
+                        InsertMenu(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
 
-                            hr = pContextMenu->InvokeCommand((LPCMINVOKECOMMANDINFO)&cmi);
+                        // Display the menu
+                        int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
 
-                            // Check if the file was deleted
-                            if (!fs::exists(filePath)) {
-                                // Find the item in the ListView
-                                LVFINDINFO findInfo{};
-                                findInfo.flags = LVFI_STRING;
-                                findInfo.psz = filePath.c_str();
-
-                                int index = ListView_FindItem(g_hListResults, -1, &findInfo);
-                                if (index != -1) {
-                                    ListView_DeleteItem(g_hListResults, index);
+                        if (cmd > 0) {
+                            if (cmd >= 0x8000 && cmd <= 0x8001) {
+                                // Handle custom actions
+                                if (cmd == 0x8000) {
+                                    OpenFileLocation(filePath);
                                 }
+                            }
+                            else {
+                                // Execute the shell command
+                                // Execute the selected command
+                                CMINVOKECOMMANDINFOEX cmi{};
+                                cmi.cbSize = sizeof(cmi);
+                                cmi.fMask = CMIC_MASK_UNICODE;
+                                cmi.hwnd = m_hwnd;
+                                cmi.lpVerb = MAKEINTRESOURCEA(cmd - 1);
+                                cmi.lpVerbW = MAKEINTRESOURCEW(cmd - 1);
+                                cmi.nShow = SW_NORMAL;
+
+                                hr = pContextMenu->InvokeCommand((LPCMINVOKECOMMANDINFO)&cmi);
+
+                                /*
+                                // Check if the file was deleted
+                                if (!fs::exists(filePath)) {
+                                    // Find the item in the ListView
+                                    LVFINDINFO findInfo{};
+                                    findInfo.flags = LVFI_STRING;
+                                    findInfo.psz = filePath.c_str();
+
+                                    int index = ListView_FindItem(g_hListResults, -1, &findInfo);
+                                    if (index != -1) {
+                                        ListView_DeleteItem(g_hListResults, index);
+                                    }
+                                }
+                                */
                             }
                         }
                     }
+                    ::DestroyMenu(hMenu);
                 }
-                ::DestroyMenu(hMenu);
+                pContextMenu->Release();
             }
-            pContextMenu->Release();
+            pShellItem->Release();
         }
-        pShellItem->Release();
     }
-}
 
-FileWatcher g_fileWatcher;
+    LRESULT WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) override final {
 
-INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
-    switch (message) {
-    case WM_INITDIALOG:
+        switch (message) {
 
-        g_hEditFolderPath = ::GetDlgItem(hDlg, IDC_EDIT1);
-        g_hListResults = ::GetDlgItem(hDlg, IDC_LIST1);
-        InitListView(g_hListResults);
-        AddItemsToListView(g_hListResults);
+        }
+
+        return DefaultWndProc(hwnd, message, wParam, lParam);
+    }
+
+private:
+    void InitListView() {
+        // Enable Explorer-style theme
+        SetExplorerTheme();
+
+        // Enable grouping in the ListView
+        ListView_SetExtendedListViewStyle(m_hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+
+        EnableGroupView(true);
+
+        m_imageList.Create(96, 96);
+        SetImageList(m_imageList.GetHandle(), LVSIL_NORMAL);
+
+
+        SetIconSpacing(128, 128);
+        InsertColumn(-1, 640, 0, LVCFMT_LEFT, L"Name");
+    }
+};
+
+class MainDlg : public Dialog {
+private:
+
+    BOOL OnInitDialog() override final {
+        Dialog::OnInitDialog();
+
+        HICON hIcon = ::LoadIcon(::GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_ICON1));
+        SendMessage(WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
+        SendMessage(WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
+
+        m_editPath.Attach(GetDlgItem(IDC_EDIT1));
+        m_editLog.Attach(GetDlgItem(IDC_EDIT2));
+        m_listView.Attach(GetDlgItem(IDC_LIST1));
 
         g_fileWatcher.SetCallback([=](fs::path path) -> void {
             // Find the item in the ListView
@@ -819,75 +1270,33 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) 
             std::wstring wpath = path.wstring();
             findInfo.psz = wpath.c_str();
 
-            int index = ListView_FindItem(g_hListResults, -1, &findInfo);
+            int index = ListView_FindItem(m_listView.GetHWND(), -1, &findInfo);
             if (index != -1) {
-                ListView_DeleteItem(g_hListResults, index);
+                ListView_DeleteItem(m_listView.GetHWND(), index);
             }
-        });
+            });
 
         return TRUE;
-        break;
-
-    case WM_NOTIFY:
-    {
-        LPNMHDR pnmh = reinterpret_cast<LPNMHDR>(lParam);
-        if (pnmh->idFrom == IDC_LIST1) {
-            if (pnmh->code == NM_RCLICK) {
-                // Get the mouse position for the context menu
-                POINT pt;
-                ::GetCursorPos(&pt);
-
-                // Translate cursor position to ListtView client coordinates
-                
-                POINT localPt;
-                localPt = pt;
-                ::ScreenToClient(pnmh->hwndFrom, &localPt);
-
-                // Identify the clicked item
-                LVHITTESTINFO hitTestInfo{};
-                hitTestInfo.pt = localPt;
-                int index = ListView_HitTest(pnmh->hwndFrom, &hitTestInfo);
-
-                if (index != -1 && (hitTestInfo.flags & LVHT_ONITEM)) {
-                    wchar_t filePath[MAX_PATH]{};
-                    ListView_GetItemText(g_hListResults, index, 0, filePath, MAX_PATH);
-
-                    // Show shell context menu
-                    ShowShellContextMenu(hDlg, filePath, pt);
-                }
-                else {
-                    // Show the context menu
-                    HMENU hMenu = ::LoadMenu(::GetModuleHandle(nullptr), MAKEINTRESOURCE(IDR_MENU1));
-                    HMENU hSubMenu = ::GetSubMenu(hMenu, 0);
-                    ::TrackPopupMenu(hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hDlg, nullptr);
-                    ::DestroyMenu(hMenu);
-                    return TRUE;
-                }
-
-                
-            }
-            else if (pnmh->code == NM_CUSTOMDRAW) {
-                return ListViewCustomDraw(pnmh->hwndFrom, lParam);
-            }
-        }
     }
-    return FALSE;
-    break;
 
-    case WM_COMMAND:
+    void EndDialog(INT_PTR result) override final {
+        Dialog::EndDialog(result);
+        ::PostQuitMessage(result);
+    }
+
+    BOOL OnDestroy() override final {
+        ::PostQuitMessage(0);
+        return TRUE;
+    }
+
+    BOOL OnCommand(WPARAM wParam, LPARAM lParam) override final {
         switch (LOWORD(wParam)) {
-        case IDOK:
-        case IDCANCEL:
-            ::DestroyWindow(hDlg);
-            return TRUE;
-            break;
-
         case IDC_BUTTON1:
             if (HIWORD(wParam) == BN_CLICKED) {
 
-                auto selectedFolder = ::SelectDirectory(hDlg);
+                auto selectedFolder = ::SelectDirectory(m_hwnd);
                 if (!selectedFolder.empty()) {
-                    ::SetWindowText(g_hEditFolderPath, selectedFolder.c_str());
+                    m_editPath.SetText(selectedFolder);
                 }
                 return TRUE;
                 break;
@@ -896,41 +1305,18 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case IDC_BUTTON2:
             if (HIWORD(wParam) == BN_CLICKED) {
-                int len = ::GetWindowTextLength(g_hEditFolderPath);
-                std::wstring selectedFolder(len, L'\0');
-                ::GetDlgItemText(hDlg, IDC_EDIT1, &selectedFolder[0], len + 1);
-                selectedFolder.resize(wcslen(selectedFolder.c_str()));
-
-                HWND hEditLog = ::GetDlgItem(hDlg, IDC_EDIT2);
-
+                std::wstring selectedFolder = m_editPath.GetText();
                 auto duplicates = find_duplicate_files(selectedFolder, [&](std::wstring message) {
-                    int len = ::GetWindowTextLength(hEditLog);
-                    ::SendMessage(hEditLog, EM_SETSEL, (WPARAM)len, (LPARAM)len);
-                    ::SendMessage(hEditLog, EM_REPLACESEL, FALSE, (LPARAM)message.c_str());
+                    m_editLog.AppendText(message);
                     });
 
                 for (const auto& [hash, files] : duplicates) {
-                    std::wcout << L"Duplicate files (Hash: " << hash << L"):\n";
-
-
-                    int groupId = CreateDuplicateGroup(g_hListResults, hash);
-
+                    int groupId = m_listView.InsertDuplicateGroup(hash);
                     for (const auto& file : files) {
-
                         g_fileWatcher.AddFile(file);
-
-                        // try {
-                        //     
-                        // }
-                        // catch (std::exception& e) {
-                        // 
-                        // }
-
-                        
-                        AddDuplicateFileItem(g_hListResults, file, groupId);
+                        m_listView.InsertDuplicateFileItem(file, groupId);
                     }
                 }
-
 
                 return TRUE;
                 break;
@@ -938,187 +1324,72 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
 
         case ID_VIEW_ICONS:
-            ListView_SetView(g_hListResults, LV_VIEW_ICON);
-            return TRUE;
-            break;
-
         case ID_VIEW_LIST:
-            ListView_SetView(g_hListResults, LV_VIEW_LIST);
-            return TRUE;
-            break;
-
         case ID_VIEW_DETAILS:
-            ListView_SetView(g_hListResults, LV_VIEW_DETAILS);
+            m_listView.SetView(
+                LOWORD(wParam) == ID_VIEW_ICONS ? LV_VIEW_ICON :
+                LOWORD(wParam) == ID_VIEW_LIST ? LV_VIEW_LIST :
+                LV_VIEW_DETAILS);
             return TRUE;
             break;
         }
 
         return FALSE;
-        break;
+    }
 
-        /*
-    case WM_CONTEXTMENU:
-        if ((HWND)wParam == g_hListResults) {
-            // GetCursorPosition
-            POINT pt;
-            ::GetCursorPos(&pt);
+    INT_PTR DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) override final {
+        switch (message) {
 
-            // Map the point to ListView coordinates
-            ::ScreenToClient(g_hListResults, &pt);
+        case WM_NOTIFY:
+        {
+            LPNMHDR pnmh = reinterpret_cast<LPNMHDR>(lParam);
+            if (pnmh->idFrom == IDC_LIST1) {
+                if (pnmh->code == NM_RCLICK) {
+                    // Get the mouse position for the context menu
+                    POINT pt;
+                    ::GetCursorPos(&pt);
 
-            // Determine the clicked item
-            LVHITTESTINFO hitTestInfo{};
-            hitTestInfo.pt = pt;
-            int index = ListView_HitTest(g_hListResults, &hitTestInfo);
+                    // Translate cursor position to ListtView client coordinates
 
-            if (index != -1 && (hitTestInfo.flags & LVHT_ONITEM)) {
-                // Load or create the context menu
-                HMENU hMenu = ::LoadMenu(::GetModuleHandle(nullptr), MAKEINTRESOURCE(IDR_MENU1));
-                if (hMenu) {
-                    HMENU hSubMenu = GetSubMenu(hMenu, 1);
+                    POINT localPt;
+                    localPt = pt;
+                    ::ScreenToClient(pnmh->hwndFrom, &localPt);
 
-                    // Display the context menu
-                    ::ClientToScreen(g_hListResults, &pt);
-                    ::TrackPopupMenu(hSubMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hDlg, nullptr);
+                    // Identify the clicked item
+                    LVHITTESTINFO hitTestInfo{};
+                    hitTestInfo.pt = localPt;
+                    int index = ListView_HitTest(pnmh->hwndFrom, &hitTestInfo);
 
-                    // Cleanup
-                    DestroyMenu(hMenu);
+                    if (index != -1 && (hitTestInfo.flags & LVHT_ONITEM)) {
+                        m_listView.OpenShellMenuForItem(index, pt);
+                    }
+                    else {
+                        // Show the context menu
+                        HMENU hMenu = ::LoadMenu(::GetModuleHandle(nullptr), MAKEINTRESOURCE(IDR_MENU1));
+                        HMENU hSubMenu = ::GetSubMenu(hMenu, 0);
+                        ::TrackPopupMenu(hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hDlg, nullptr);
+                        ::DestroyMenu(hMenu);
+                        return TRUE;
+                    }
+
+
+                }
+                else if (pnmh->code == NM_CUSTOMDRAW) {
+                    return ListViewCustomDraw(pnmh->hwndFrom, lParam);
                 }
             }
         }
-        return TRUE;
-        break;
-        */
-
-    case WM_SIZE: {
-        RECT rcClient;
-        ::GetClientRect(hDlg, &rcClient);
-
-        HDWP hdwp = ::BeginDeferWindowPos(1);
-        // hdwp = ::DeferWindowPos(hdwp, g_hListView, HWND_TOP, 0, 0, RECTWIDTH(&rcClient), RECTHEIGHT(&rcClient) - 40, SWP_SHOWWINDOW);
-
-        HINSTANCE hInstance = ::GetModuleHandle(nullptr);
-
-        HRSRC hResource = ::FindResource(hInstance, MAKEINTRESOURCE(IDD_DIALOG1), RT_DIALOG);
-        if (!hResource) {
-            MessageBox(nullptr, L"Dialog resource not found!", L"Error", MB_OK);
-            return FALSE;
-        }
-
-        // Load resource data
-        HGLOBAL hGlobal = LoadResource(hInstance, hResource);
-        if (!hGlobal) {
-            MessageBox(nullptr, L"Failed to load dialog resource!", L"Error", MB_OK);
-            return FALSE;
-        }
-
-        // Lock the resource to access the template data
-        LPVOID lpDialogTemplate = ::LockResource(hGlobal);
-        if (!lpDialogTemplate) {
-            MessageBox(nullptr, L"Failed to lock dialog resource!", L"Error", MB_OK);
-            return FALSE;
-        }
-
-        // Pointer to the dialog template structure
-        DLGTEMPLATEEX dlgTemplate;
-        void* head = ReadDlgTemplateEx(lpDialogTemplate, &dlgTemplate);
-
-        // Get the width and height of the dialog
-        int dlgWidth = dlgTemplate.cx;
-        int dlgHeight = dlgTemplate.cy;
-
-        int controlCount = dlgTemplate.cDlgItems;
-
-        RECT rcDialog{};
-        rcDialog.left = 0;
-        rcDialog.top = 0;
-        rcDialog.right = dlgWidth;
-        rcDialog.bottom = dlgHeight;
-        MapDialogRect(hDlg, &rcDialog);
-
-        // Loop through the controls and get their position and size
-        DLGITEMTEMPLATEEX item;
-        for (int i = 0; i < controlCount; i++) {
-            head = ReadDlgItemTemplateEx(head, &item);
-
-            int controlX = item.x;
-            int controlY = item.y;
-            int controlWidth = item.cx;
-            int controlHeight = item.cy;
-
-            RECT rc{};
-            rc.left = controlX;
-            rc.top = controlY;
-            rc.right = controlX + controlWidth;
-            rc.bottom = controlY + controlHeight;
-            MapDialogRect(hDlg, &rc);
-
-            HWND hDlgItem = ::GetDlgItem(hDlg, item.id);
-
-            switch (item.id) {
-            case IDC_LIST1:
-            {
-                hdwp = ::DeferWindowPos(hdwp, hDlgItem, HWND_TOP,
-                    rc.left,
-                    rc.top,
-                    RECTWIDTH(&rcClient) - rc.left - (RECTWIDTH(&rcDialog) - rc.right),
-                    RECTHEIGHT(&rcClient) - rc.top - (RECTHEIGHT(&rcDialog) - rc.bottom),
-                    SWP_NOREPOSITION);
-            }
-            break;
-
-            case IDC_EDIT2:
-            {
-                hdwp = ::DeferWindowPos(hdwp, hDlgItem, HWND_TOP,
-                    rc.left,
-                    RECTHEIGHT(&rcClient) - (RECTHEIGHT(&rcDialog) - rc.top),
-                    RECTWIDTH(&rcClient) - rc.left - (RECTWIDTH(&rcDialog) - rc.right),
-                    RECTHEIGHT(&rc),
-                    SWP_NOREPOSITION);
-            }
-            break;
-
-            case IDC_PROGRESS1:
-            {
-                hdwp = ::DeferWindowPos(hdwp, hDlgItem, HWND_TOP,
-                    rc.left,
-                    RECTHEIGHT(&rcClient) - (RECTHEIGHT(&rcDialog) - rc.top),
-                    RECTWIDTH(&rcClient) - rc.left - (RECTWIDTH(&rcDialog) - rc.right),
-                    RECTHEIGHT(&rc),
-                    SWP_NOREPOSITION);
-            }
-            break;
-
-            case IDOK:
-            case IDCANCEL:
-            {
-                hdwp = ::DeferWindowPos(hdwp, hDlgItem, HWND_TOP,
-                    RECTWIDTH(&rcClient) - (RECTWIDTH(&rcDialog) - rc.left),
-                    RECTHEIGHT(&rcClient) - (RECTHEIGHT(&rcDialog) - rc.top),
-                    RECTWIDTH(&rc), RECTHEIGHT(&rc), SWP_NOSIZE);
-            }
-            break;
-            }
-        }
-
-        // RECT rcWindow;
-        // ::GetWindowRect(g_hBtnOk, &rcWindow);
-        // hdwp = ::DeferWindowPos(hdwp, g_hBtnOk, HWND_TOP, RECTWIDTH(&rcClient) - RECTWIDTH(&rcWindow) - 11, RECTHEIGHT(&rcClient) - RECTHEIGHT(&rcWindow) - 11, 300, 26, SWP_SHOWWINDOW | SWP_NOSIZE);
-        ::EndDeferWindowPos(hdwp);
-        return TRUE;
-    }
-        break;
-
-    case WM_DESTROY:
-        ::PostQuitMessage(0);
         return FALSE;
         break;
+        }
+
+        return DlgProcDefault(hDlg, message, wParam, lParam);
     }
 
-    
-
-    return FALSE;
-}
+    DuplicateFilesListView m_listView;
+    Edit m_editPath;
+    Edit m_editLog;
+};
 
 std::wstring CharToWChar(const std::string& str) {
     // Get the required size of the wide-character buffer
@@ -1138,92 +1409,693 @@ std::wstring CharToWChar(const std::string& str) {
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
 
-    MSG msg{};
-
-    std::locale::global(std::locale("en_US.UTF-8"));
+    // std::locale::global(std::locale("en_US.UTF-8"));
 
     INITCOMMONCONTROLSEX iccex{};
     iccex.dwSize = sizeof(iccex);
     iccex.dwICC = ICC_LISTVIEW_CLASSES;
     ::InitCommonControlsEx(&iccex);
 
+    MSG msg{};
+
     try {
         std::thread fileWatcherThread(std::ref(g_fileWatcher));
         fileWatcherThread.detach();
 
-        HWND hDialog = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_DIALOG1), nullptr, reinterpret_cast<DLGPROC>(DlgProc));
-        ShowWindow(hDialog, nCmdShow);
-    
+        MainDlg dlg;
+        dlg.Create(IDD_DIALOG1, nullptr, false);
+        dlg.Show();
+
         while (::GetMessage(&msg, nullptr, 0, 0)) {
             ::TranslateMessage(&msg);
             ::DispatchMessage(&msg);
         }
     }
     catch (std::exception& e) {
-        std::wstring message = CharToWChar(e.what());
-        ::MessageBox(nullptr, message.c_str(), nullptr, MB_OK | MB_ICONERROR);
+        std::string message = e.what();
+        ::MessageBoxA(nullptr, message.c_str(), nullptr, MB_OK | MB_ICONERROR);
     }
 
     return static_cast<int>(msg.wParam);
 }
 
-int main() {
-    fs::path directory_to_scan = L"D:\\WebM"; // Change to your directory
-    fs::path duplicates_folder = L"./duplicates";
+Window::~Window() {
+    if (m_pDynamicLayout) {
+        delete m_pDynamicLayout;
+        m_pDynamicLayout = nullptr;
+    }
+}
 
-    try {
-        // Set the locale to handle Unicode properly
-        std::locale::global(std::locale("en_US.UTF-8"));
+void Window::Attach(HWND hwnd) {
+    Detach();
 
-        // Create the duplicates folder if it doesn't exist
-        if (!fs::exists(duplicates_folder)) {
-            fs::create_directory(duplicates_folder);
-        }
-
-        auto duplicates = find_duplicate_files(directory_to_scan);
-
-        for (const auto& [hash, files] : duplicates) {
-            std::wcout << L"Duplicate files (Hash: " << hash << L"):\n";
-
-            // Move the first file to the duplicates folder
-            auto first_file = files.front();
-            fs::path destination = duplicates_folder / first_file.filename();
-
-            // Ensure unique naming if file already exists in duplicates folder
-            int counter = 1;
-            while (fs::exists(destination)) {
-                destination = duplicates_folder / (first_file.stem().wstring() + L"_" + std::to_wstring(counter) + first_file.extension().wstring());
-                ++counter;
-            }
-
-            try {
-                fs::copy(first_file, destination, fs::copy_options::overwrite_existing);
-                std::wcout << L"  Copied: " << first_file.wstring() << L" -> " << destination.wstring() << L'\n';
-            }
-            catch (const std::exception& e) {
-                std::wcerr << L"  Error copying " << first_file.wstring() << L": " << e.what() << L'\n';
-                continue;
-            }
-
-            // Delete all duplicate files (including the first one from original location)
-            for (const auto& file : files) {
-                try {
-                    fs::remove(file);
-                    std::wcout << L"  Deleted: " << file.wstring() << L'\n';
-                }
-                catch (const std::exception& e) {
-                    std::wcerr << L"  Error deleting " << file.wstring() << L": " << e.what() << L'\n';
-                }
-            }
-        }
-
-        if (duplicates.empty()) {
-            std::wcout << L"No duplicate files found.\n";
+    if (::IsWindow(hwnd)) {
+        if (!WindowMap::Instance().GetWindow(hwnd)) {
+            WindowMap::Instance().Add(hwnd, this);
+            Subclass(hwnd);
         }
     }
-    catch (const std::exception& e) {
-        std::wcerr << L"Error: " << e.what() << L'\n';
+}
+
+HWND Window::Detach() {
+    HWND hwnd = m_hwnd;
+    if (m_pfnPrevWindowProc) {
+        UnSubclass();
+    }
+    WindowMap::Instance().Remove(this);
+    m_hwnd = nullptr;
+    return hwnd;
+}
+
+void Window::Destroy() {
+    ::DestroyWindow(m_hwnd);
+    m_hwnd = nullptr;
+}
+
+BOOL Window::IsWindow() const {
+    return ::IsWindow(m_hwnd);
+}
+
+LRESULT Window::SendMessage(UINT message, WPARAM wParam, LPARAM lParam) const {
+    return ::SendMessage(m_hwnd, message, wParam, lParam);
+}
+
+BOOL Window::Show(int cmd_show) const {
+    return ::ShowWindow(m_hwnd, cmd_show);
+}
+
+HWND Window::GetHWND() const {
+    return m_hwnd;
+}
+
+void Window::SetHWND(HWND hwnd) {
+    m_hwnd = hwnd;
+}
+
+BOOL Window::SetPosition(HWND hwndInsertAfter, int x, int y, int w, int h, UINT flags) const {
+    return ::SetWindowPos(m_hwnd, hwndInsertAfter, x, y, w, h, flags);
+}
+
+DWORD Window::GetStyle() const {
+    return static_cast<DWORD>(::GetWindowLongPtr(m_hwnd, GWL_STYLE));
+}
+
+DWORD Window::SetStyle(DWORD dwStyle) const {
+    return static_cast<DWORD>(::SetWindowLongPtr(m_hwnd, GWL_STYLE, static_cast<LONG_PTR>(dwStyle)));
+}
+
+BOOL Window::ModifyStyle(DWORD dwRemove, DWORD dwAdd, UINT nFlags) const {
+    DWORD dwStyle = GetStyle();
+    DWORD dwNewStyle = (dwStyle & ~dwRemove) | dwAdd;
+    if (dwStyle == dwNewStyle) {
+        return FALSE;
+    }
+    SetStyle(dwStyle);
+
+    if (nFlags) {
+        SetPosition(nullptr, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | nFlags);
+    }
+    return TRUE;
+}
+
+DWORD Window::GetExStyle() const {
+    return static_cast<DWORD>(::GetWindowLongPtr(m_hwnd, GWL_EXSTYLE));
+}
+
+std::wstring Window::GetText() const {
+    int len = ::GetWindowTextLength(m_hwnd);
+    std::wstring buffer(len, L'\0');
+    ::GetWindowText(m_hwnd, &buffer[0], len + 1);
+    return buffer;
+}
+
+LRESULT Window::SetText(PCWSTR text) const {
+    return SendMessage(WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text));
+}
+
+LRESULT Window::SetText(const std::wstring& text) const {
+    return SetText(text.c_str());
+}
+
+int Window::GetTextLength() const {
+    return ::GetWindowTextLength(m_hwnd);
+}
+
+DynamicLayout* Window::GetDynamicLayout() {
+    return m_pDynamicLayout;
+}
+
+void Window::EnableDynamicLayout(bool enable) {
+    if (m_pDynamicLayout) {
+        delete m_pDynamicLayout;
+        m_pDynamicLayout = nullptr;
     }
 
-    return 0;
+    if (!enable) {
+        return;
+    }
+
+    m_pDynamicLayout = new DynamicLayout;
+}
+
+void Window::ResizeDynamicLayout() {
+    if (m_pDynamicLayout && !::IsIconic(m_hwnd)) {
+        if (!m_pDynamicLayout) {
+            throw std::runtime_error("Invalid dynamic layout!");
+        }
+        m_pDynamicLayout->Adjust();
+    }
+}
+
+BOOL Window::LoadDynamicLayoutResource(PCWSTR pszResourceName) {
+    if (!IsWindow()) {
+        return FALSE;
+    }
+
+    HINSTANCE hInstance = ::GetModuleHandle(nullptr);
+    HRSRC hResource = ::FindResource(hInstance, pszResourceName, L"AFX_DIALOG_LAYOUT");
+    if (!hResource) {
+        ::MessageBox(nullptr, L"Dialog resource not found!", L"Error", MB_OK | MB_ICONERROR);
+        return FALSE;
+    }
+
+    // Load resource data
+    DWORD dwSize = 0;
+    dwSize = SizeofResource(hInstance, hResource);
+    HGLOBAL hGlobal = ::LoadResource(hInstance, hResource);
+    if (!hGlobal) {
+        ::MessageBox(nullptr, L"Failed to load dialog resource!", L"Error", MB_OK | MB_ICONERROR);
+        ::FreeResource(hResource);
+        return FALSE;
+    }
+
+    LPVOID pDialogTemplate = ::LockResource(hGlobal);
+    if (!pDialogTemplate) {
+        ::MessageBox(nullptr, L"Failed to lock dialog resource!", L"Error", MB_OK | MB_ICONERROR);
+        UnlockResource(hResource);
+        ::FreeResource(hResource);
+        return FALSE;
+    }
+
+    // Load dialog template
+    BOOL bResult = DynamicLayout::LoadResource(this, pDialogTemplate, dwSize);
+
+    // Cleanup
+    if (pDialogTemplate && hResource) {
+        UnlockResource(hResource);
+        ::FreeResource(hResource);
+    }
+
+    if (bResult) {
+        InitDynamicLayout();
+    }
+
+    return bResult;
+}
+
+BOOL Window::InitDynamicLayout() {
+    if (m_pDynamicLayout) {
+        Dialog* dialog = dynamic_cast<Dialog*>(this);
+
+        const bool is_child = (GetStyle() & WS_CHILD) == WS_CHILD;
+
+        if (!is_child && dialog) {
+            RECT rc;
+            ::GetClientRect(m_hwnd, &rc);
+
+            ModifyStyle(DS_MODALFRAME, WS_POPUP | WS_THICKFRAME);
+            ::AdjustWindowRectEx(&rc, GetStyle(), ::IsMenu(GetMenu(m_hwnd)), GetExStyle());
+
+            SetPosition(nullptr, 0, 0, RECTWIDTH(&rc), RECTHEIGHT(&rc), SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
+    }
+    else {
+        throw std::logic_error("Invalid dynamic layout!");
+    }
+}
+
+bool Window::IsDynamicLayoutEnabled() const {
+    return !!m_pDynamicLayout;
+}
+
+LRESULT Window::DefaultWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_COMMAND:
+        if (OnCommand(wParam, lParam)) {
+            return 0;
+        }
+        break;
+
+    case WM_CREATE:
+        OnCreate(hwnd, reinterpret_cast<LPCREATESTRUCT>(lParam));
+        break;
+
+    case WM_DESTROY:
+        if (OnDestroy()) {
+            return 0;
+        }
+        break;
+
+    case WM_SIZE: {
+        SIZE size = { LOWORD(lParam, HIWORD(lParam)) };
+        OnSize(message, static_cast<UINT>(wParam), size);
+        break;
+    }
+    }
+
+    if (m_pfnPrevWindowProc) {
+        return ::CallWindowProc(m_pfnPrevWindowProc, hwnd, message, wParam, lParam);
+    }
+    else {
+        return ::DefWindowProc(hwnd, message, wParam, lParam);
+    }
+}
+
+LRESULT Window::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    return DefaultWndProc(hwnd, message, wParam, lParam);
+}
+
+LRESULT Window::StaticWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    Window* window = WindowMap::Instance().GetWindow(hwnd);
+
+    if (!window) {
+        window = m_currentWindow;
+        if (window) {
+            window->SetHWND(hwnd);
+            WindowMap::Instance().Add(hwnd, window);
+        }
+    }
+
+    if (window) {
+        return window->WndProc(hwnd, message, wParam, lParam);
+    }
+    else {
+        return ::DefWindowProc(hwnd, message, wParam, lParam);
+    }
+}
+
+BOOL Window::OnCommand(WPARAM wParam, LPARAM lParam) {
+    return FALSE;
+}
+
+void Window::OnCreate(HWND hwnd, LPCREATESTRUCT lpcs) {
+    LOGFONT lf;
+    ::GetObject(::GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+    m_hFont = ::CreateFontIndirect(&lf);
+    ::SendMessage(m_hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), FALSE);
+}
+
+BOOL Window::OnDestroy() {
+    return FALSE;
+}
+
+void Window::OnSize(UINT message, UINT type, SIZE size) {
+    ResizeDynamicLayout();
+}
+
+void Window::Subclass(HWND hwnd) {
+    WNDPROC pfnCurrentProc = reinterpret_cast<WNDPROC>(::GetWindowLongPtr(hwnd, GWLP_WNDPROC));
+    if (pfnCurrentProc != reinterpret_cast<WNDPROC>(StaticWndProc)) {
+        m_pfnPrevWindowProc = reinterpret_cast<WNDPROC>(::SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(StaticWndProc)));
+        m_hwnd = hwnd;
+    }
+}
+
+void Window::UnSubclass() {
+    WNDPROC pfnCurrentProc = reinterpret_cast<WNDPROC>(::GetWindowLongPtr(m_hwnd, GWLP_WNDPROC));
+    if (pfnCurrentProc == reinterpret_cast<WNDPROC>(StaticWndProc)) {
+        ::SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_pfnPrevWindowProc));
+        m_pfnPrevWindowProc = nullptr;
+    }
+}
+
+Window* Window::m_currentWindow;
+
+Dialog::~Dialog() {
+    EndDialog(0);
+}
+
+INT_PTR Dialog::Create(UINT resource_id, HWND parent, bool modal) {
+    m_resourceId = resource_id;
+
+    if (modal) {
+        INT_PTR result = ::DialogBoxParam(::GetModuleHandle(nullptr), MAKEINTRESOURCE(resource_id), parent, StaticDlgProc, reinterpret_cast<LPARAM>(this));
+        m_hwnd = nullptr;
+        return result;
+    }
+    else {
+        m_hwnd = ::CreateDialogParam(::GetModuleHandle(nullptr), MAKEINTRESOURCE(resource_id), parent, StaticDlgProc, reinterpret_cast<LPARAM>(this));
+        return reinterpret_cast<INT_PTR>(m_hwnd);
+    }
+}
+
+void Dialog::EndDialog(INT_PTR result) {
+    if (IsWindow()) {
+        if (m_modal) {
+            ::EndDialog(m_hwnd, result);
+        }
+        else {
+            Destroy();
+        }
+    }
+    m_hwnd = nullptr;
+}
+
+HWND Dialog::GetDlgItem(int id_item) const {
+    return ::GetDlgItem(m_hwnd, id_item);
+}
+
+void Dialog::OnCancel() {
+    EndDialog(IDCANCEL);
+}
+
+BOOL Dialog::OnClose() {
+    return FALSE;
+}
+
+BOOL Dialog::OnInitDialog() {
+    LoadDynamicLayoutResource(MAKEINTRESOURCE(m_resourceId));
+    return TRUE;
+}
+
+void Dialog::OnOK() {
+    EndDialog(IDOK);
+}
+
+INT_PTR Dialog::DlgProcDefault(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_CLOSE: {
+        return OnClose();
+    }
+    case WM_COMMAND: {
+        switch (LOWORD(wParam)) {
+        case IDOK:
+            OnOK();
+            return TRUE;
+        case IDCANCEL:
+            OnCancel();
+            return TRUE;
+        default:
+            return OnCommand(wParam, lParam);
+        }
+        break;
+    }
+    case WM_INITDIALOG:
+        return OnInitDialog();
+
+    case WM_SIZE: {
+        SIZE size = { LOWORD(lParam), HIWORD(lParam) };
+        OnSize(message, static_cast<UINT>(wParam), size);
+        break;
+    }
+    }
+
+    return FALSE;
+}
+
+INT_PTR Dialog::DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    return DlgProcDefault(hDlg, message, wParam, lParam);
+}
+
+INT_PTR Dialog::StaticDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    Dialog* window = reinterpret_cast<Dialog*>(WindowMap::Instance().GetWindow(hDlg));
+
+    if (!window && message == WM_INITDIALOG) {
+        window = reinterpret_cast<Dialog*>(lParam);
+        if (window) {
+            window->SetHWND(hDlg);
+            WindowMap::Instance().Add(hDlg, window);
+        }
+    }
+
+    if (window) {
+        return window->DlgProc(hDlg, message, wParam, lParam);
+    }
+    else {
+        return FALSE;
+    }
+}
+
+
+void DynamicLayoutData::CleanUp() {
+    m_listCtrls.clear();
+}
+
+BOOL DynamicLayoutData::ReadResource(PVOID pResource, UINT nSize) {
+    if (!(pResource && nSize)) {
+        return FALSE;
+    }
+
+    CleanUp();
+
+    const BYTE* const pBuf = (BYTE*)pResource;
+    const WORD* const pwEnd = (WORD*)(pBuf + nSize);
+    const WORD* pw = (WORD*)pBuf;
+
+    // header
+    WORD wVersion = *pw++;
+
+    if (wVersion == 0) {
+        // data
+        while (pw + 4 <= pwEnd) {
+            Item itemData;
+
+            itemData.m_moveSettings.m_nXRatio = std::clamp(static_cast<int>(*pw++), 0, 100);
+            itemData.m_moveSettings.m_nYRatio = std::clamp(static_cast<int>(*pw++), 0, 100);
+            itemData.m_sizeSettings.m_nXRatio = std::clamp(static_cast<int>(*pw++), 0, 100);
+            itemData.m_sizeSettings.m_nYRatio = std::clamp(static_cast<int>(*pw++), 0, 100);
+
+            m_listCtrls.push_back(itemData);
+        }
+
+        return !m_listCtrls.empty();
+    }
+
+    return FALSE;
+}
+
+BOOL DynamicLayoutData::ApplyLayoutDataTo(Window* pHostWnd, BOOL bUpdate) {
+    if (!pHostWnd->GetHWND() || m_listCtrls.empty()) {
+        return FALSE;
+    }
+
+    if (!pHostWnd->IsWindow()) {
+        throw std::runtime_error("ApplyLayoutDataTo: Window is invalid");
+    }
+
+    pHostWnd->EnableDynamicLayout(FALSE);
+    pHostWnd->EnableDynamicLayout();
+
+    auto pLayout = pHostWnd->GetDynamicLayout();
+    if (!pLayout) {
+        return FALSE;
+    }
+
+    if (!pLayout->Create(pHostWnd)) {
+        return FALSE;
+    }
+
+    HWND hwndChild = ::GetWindow(pHostWnd->GetHWND(), GW_CHILD);
+    for (auto& item : m_listCtrls) {
+        if (!hwndChild) {
+            break;
+        }
+
+        if (!item.m_moveSettings.IsNone() || !item.m_sizeSettings.IsNone()) {
+            pLayout->AddItem(hwndChild, item.m_moveSettings, item.m_sizeSettings);
+        }
+
+        hwndChild = ::GetNextWindow(hwndChild, GW_HWNDNEXT);
+    }
+
+    if (bUpdate) {
+        pLayout->Adjust();
+    }
+
+    return TRUE;
+}
+
+BOOL DynamicLayout::Create(Window* pHostWnd) {
+    if (!pHostWnd->GetHWND()) {
+        throw std::runtime_error("Failed to create dynamic layout for window");
+        return FALSE;
+    }
+
+    m_pHostWnd = pHostWnd;
+    return TRUE;
+}
+
+UINT DynamicLayout::AdjustItemRect(const DynamicLayoutItem& item, RECT& rc) {
+    if (!m_pHostWnd || !::IsWindow(m_pHostWnd->GetHWND())) {
+        throw std::runtime_error("Invalid host window");
+    }
+
+    ::SetRectEmpty(&rc);
+
+    RECT rcHost;
+    ::GetClientRect(m_pHostWnd->GetHWND(), &rcHost);
+
+    if (rcHost.left == 0 && rcHost.right == 0 && rcHost.top == 0 && rcHost.bottom == 0) {
+        return SWP_NOMOVE | SWP_NOSIZE;
+    }
+
+    UINT uiFlags = 0;
+    const double deltaX = 0.01 * RECTWIDTH(&rcHost);
+    const double deltaY = 0.01 * RECTHEIGHT(&rcHost);
+
+    DynamicLayoutItem::Point point(item.m_ptInit);
+    DynamicLayoutItem::Point size(item.m_szInit);
+
+    // Is horizontal
+    if (item.m_moveSettings.IsHorizontal()) {
+        point.x += deltaX * item.m_moveSettings.m_nXRatio;
+    }
+
+    // Is vertical
+    if (item.m_moveSettings.IsVertical()) {
+        point.y += deltaY * item.m_moveSettings.m_nYRatio;
+    }
+
+    // Is horizontal
+    if (item.m_sizeSettings.IsHorizontal()) {
+        size.x += deltaX * item.m_sizeSettings.m_nXRatio;
+    }
+
+    if (item.m_sizeSettings.IsVertical()) {
+        size.y += deltaY * item.m_sizeSettings.m_nYRatio;
+    }
+
+    rc.left = (long)point.x + rcHost.left;
+    rc.top = (long)point.y + rcHost.top;
+    rc.right = rc.left + (long)size.x;
+    rc.bottom = rc.top + (long)size.y;
+
+    if (rc.left == (item.m_ptInit.x + rcHost.left) && rc.top == (item.m_ptInit.y + rcHost.top)) {
+        uiFlags |= SWP_NOMOVE;
+    }
+
+    if (RECTWIDTH(&rc) == item.m_szInit.x && RECTHEIGHT(&rc) == item.m_szInit.y) {
+        uiFlags |= SWP_NOSIZE;
+    }
+
+    return uiFlags;
+}
+
+void DynamicLayout::Adjust() {
+    if (m_listWnd.empty()) {
+        return;
+    }
+
+    HDWP hdwp = ::BeginDeferWindowPos(static_cast<int>(m_listWnd.size()));
+
+    for (auto& item : m_listWnd) {
+        if (::IsWindow(item->hwnd)) {
+            RECT rcItem;
+            UINT uiFlags = AdjustItemRect(*item, rcItem);
+
+            if ((uiFlags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE)) {
+                ::DeferWindowPos(hdwp, item->hwnd, HWND_TOP, rcItem.left, rcItem.top,
+                    RECTWIDTH(&rcItem), RECTHEIGHT(&rcItem),
+                    uiFlags | SWP_NOZORDER | SWP_NOREPOSITION | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+            }
+        }
+    }
+
+    ::EndDeferWindowPos(hdwp);
+}
+
+BOOL DynamicLayout::AddItem(HWND hWnd, MoveSettings moveSettings, SizeSettings sizeSettings) {
+    if (!(hWnd && ::IsWindow(hWnd) && ::IsChild(m_pHostWnd->GetHWND(), hWnd))) {
+        throw;
+        return FALSE;
+    }
+
+    // Item already exists
+    DynamicLayoutItem* pItem = FindItem(hWnd);
+    if (pItem) {
+        throw;
+        return FALSE;
+    }
+
+    pItem = new DynamicLayoutItem(hWnd, moveSettings, sizeSettings);
+    if (PrepareItem(*pItem)) {
+        m_listWnd.push_back(pItem);
+    }
+
+    return TRUE;
+}
+
+DynamicLayoutItem* DynamicLayout::FindItem(HWND hWnd) {
+    for (auto& item : m_listWnd) {
+        if (item->hwnd == hWnd) {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
+BOOL DynamicLayout::PrepareItem(DynamicLayoutItem& item) const {
+    RECT rcHost;
+    ::GetClientRect(m_pHostWnd->GetHWND(), &rcHost);
+
+    // Is rect null
+    if (rcHost.left == 0 && rcHost.right == 0 && rcHost.top == 0 && rcHost.bottom == 0) {
+        throw;
+        return FALSE;
+    }
+
+    RECT rcChild = GetItemRect(item);
+
+    const double deltaX = 0.01 * RECTWIDTH(&rcHost);
+    const double deltaY = 0.01 * RECTHEIGHT(&rcHost);
+
+    item.m_ptInit.x = (double)rcChild.left;
+    item.m_ptInit.y = (double)rcChild.top;
+
+    if (item.m_moveSettings.IsHorizontal()) {
+        item.m_ptInit.x -= deltaX * item.m_moveSettings.m_nXRatio;
+    }
+
+    if (item.m_moveSettings.IsVertical()) {
+        item.m_ptInit.y -= deltaY * item.m_moveSettings.m_nYRatio;
+    }
+
+    item.m_szInit.x = (double)RECTWIDTH(&rcChild);
+    item.m_szInit.y = (double)RECTHEIGHT(&rcChild);
+
+    if (item.m_sizeSettings.IsHorizontal()) {
+        item.m_szInit.x -= deltaX * item.m_sizeSettings.m_nXRatio;
+    }
+
+    if (item.m_sizeSettings.IsVertical()) {
+        item.m_szInit.y -= deltaY * item.m_sizeSettings.m_nYRatio;
+    }
+
+    return TRUE;
+}
+
+RECT DynamicLayout::GetItemRect(DynamicLayoutItem& item) const {
+    RECT rcChild{};
+
+    if (!m_pHostWnd) {
+        throw;
+        return RECT{};
+    }
+
+    ::GetWindowRect(item.hwnd, &rcChild);
+    m_pHostWnd->ScreenToClient(&rcChild);
+
+    return rcChild;
+}
+
+BOOL DynamicLayout::LoadResource(Window* pHostWnd, PVOID pResource, DWORD dwSize) {
+    if (!(pHostWnd->GetHWND() && ::IsWindow(pHostWnd->GetHWND()) && pResource)) {
+        return FALSE;
+    }
+
+    DynamicLayoutData layoutData;
+    BOOL bResult = layoutData.ReadResource(pResource, (UINT)dwSize);
+    layoutData.ApplyLayoutDataTo(pHostWnd, FALSE);
+
+    return bResult;
 }
