@@ -15,16 +15,51 @@
 #include <functional>
 #include <format>
 #include <thread>
+#include <unordered_map>
 #include <map>
 #include <string>
 #include <algorithm>
 #include <shared_mutex>
+#include <set>
+#include <queue>
+#include <array>
 
 namespace fs = std::filesystem;
+
+std::atomic<bool> g_stop;
 
 std::wstring convert_to_wstring(const char* narrow_str) {
     if (!narrow_str) return L"";
     return std::wstring(narrow_str, narrow_str + std::strlen(narrow_str));
+}
+
+class ThumbCache {
+
+};
+
+std::wstring compute_hash(std::istream& stream) {
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+
+    // Buffer to read the data
+    constexpr size_t buffer_size = 8192;
+    char buffer[buffer_size];
+
+    while (stream.read(buffer, buffer_size)) {
+        SHA256_Update(&ctx, buffer, stream.gcount());
+    }
+    // Update for any remaining bytes
+    SHA256_Update(&ctx, buffer, stream.gcount());
+
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_Final(hash, &ctx);
+
+    std::wstringstream result;
+    for (unsigned char c : hash) {
+        result << std::setw(2) << std::setfill(L'0') << std::hex << static_cast<int>(c);
+    }
+
+    return result.str();
 }
 
 // Helper function to compute SHA-256 hash of a file
@@ -63,14 +98,29 @@ std::wstring compute_file_hash(const fs::path& file_path, std::function<void(std
 }
 
 // Function to find duplicate files by hash
-std::unordered_map<std::wstring, std::vector<fs::path>> find_duplicate_files(const fs::path& root, std::function<void(std::wstring)> logCallback = [](std::wstring) {}) {
-    std::unordered_map<std::wstring, std::vector<fs::path>> hash_to_files;
+void find_duplicate_files(
+    const fs::path& root,
+    std::function<void(fs::path, std::wstring)> insertDuplicate = [](fs::path path, std::wstring hash) {},
+    std::function<void(std::wstring)> logCallback = [](std::wstring) {}
+) {
+    std::map<std::wstring, std::tuple<fs::path, bool>> seen_hashes;
 
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
         if (entry.is_regular_file()) {
             try {
+
                 auto hash = compute_file_hash(entry.path(), logCallback);
-                hash_to_files[hash].push_back(entry.path());
+                auto seen = seen_hashes.find(hash);
+                if (seen != seen_hashes.end()) {
+                    if (!std::get<1>(seen->second)) {
+                        insertDuplicate(std::get<0>(seen->second), hash);
+                        std::get<1>(seen->second) = true;
+                    }
+                    insertDuplicate(entry, hash);
+                }
+                else {
+                    seen_hashes.insert({ hash, { entry, false } });
+                }
             }
             catch (const std::exception& e) {
                 std::wstring error_message = convert_to_wstring(e.what());
@@ -78,19 +128,239 @@ std::unordered_map<std::wstring, std::vector<fs::path>> find_duplicate_files(con
             }
         }
     }
+}
 
-    // Remove entries with only one file (unique files)
-    for (auto it = hash_to_files.begin(); it != hash_to_files.end();) {
-        if (it->second.size() < 2) {
-            it = hash_to_files.erase(it);
+// Abstract base class for a task
+class Task {
+public:
+    virtual void execute() = 0;
+    virtual void cancel() {
+        m_cancelFlag.store(true);
+    }
+    virtual ~Task() = default;
+
+    bool isCanceled() const {
+        return m_cancelFlag.load();
+    }
+
+protected:
+    std::atomic<bool> m_cancelFlag{ false };
+};
+
+// Thread-safe task manager for processing tasks
+class TaskManager {
+public:
+    TaskManager() : m_stopRequested(false) {
+        m_workerThread = std::thread(&TaskManager::workerThread, this);
+    }
+
+    ~TaskManager() {
+        stop();
+    }
+
+    void submitTask(std::shared_ptr<Task> task) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_taskQueue.push(std::move(task));
         }
-        else {
-            ++it;
+        m_condition.notify_one();
+    }
+
+    void cancelAllTasks() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        while (!m_taskQueue.empty()) {
+            m_taskQueue.front()->cancel();
+            m_taskQueue.pop();
+        }
+        if (m_currentTask) {
+            m_currentTask->cancel();
         }
     }
 
-    return hash_to_files;
-}
+    void stop() {
+        {
+            //std::lock_guard<std::mutex> lock(m_mutex);
+            m_stopRequested = true;
+            cancelAllTasks();
+        }
+        m_condition.notify_all();
+        if (m_workerThread.joinable()) {
+            m_workerThread.join();
+        }
+    }
+
+private:
+    void workerThread() {
+        while (true) {
+            std::shared_ptr<Task> task = nullptr;
+
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_condition.wait(lock, [this] { return !m_taskQueue.empty() || m_stopRequested; });
+
+                if (m_stopRequested) {
+                    break;
+                }
+
+                if (!m_taskQueue.empty()) {
+                    task = std::move(m_taskQueue.front());
+                    m_taskQueue.pop();
+                    m_currentTask = task;
+                }
+            }
+
+            if (task) {
+                task->execute();
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    if (m_currentTask == task) {
+                        m_currentTask.reset();
+                    }
+                }
+            }
+        }
+    }
+
+    std::atomic<bool> m_stopRequested;
+    std::queue<std::shared_ptr<Task>> m_taskQueue;
+    std::shared_ptr<Task> m_currentTask;
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    std::thread m_workerThread;
+};
+
+TaskManager g_taskPool;
+
+using HashType = std::array<unsigned char, SHA256_DIGEST_LENGTH>;
+
+class FindDuplicateTask : public Task {
+public:
+    enum class EProgressState {
+        SETBOUNDARY,
+        UPDATE
+    };
+
+    struct IProgressData {
+
+    };
+
+    struct ProgressUpdate : public IProgressData {
+        int position;
+    };
+
+    struct ProgressInit : public IProgressData {
+        int min;
+        int max;
+    };
+
+    using ProgressCallback = std::function<void(EProgressState, IProgressData*)>;
+    using InsertCallback = std::function<void(fs::path, const HashType&)>;
+    using MessageCallback = std::function<void(std::wstring)>;
+
+    FindDuplicateTask(
+        const fs::path& path,
+        const ProgressCallback& progressCallback,
+        const InsertCallback& insertCallback,
+        const MessageCallback& messageCallback = [](std::wstring message) { std::wcout << message << std::endl; })
+        : m_rootPath(path),
+        m_progressCallback(progressCallback),
+        m_insertCallback(insertCallback),
+        m_messageCallback(messageCallback) {
+
+        m_cancelFlag.store(false);
+    }
+
+    void cancel() {
+        m_cancelFlag.store(true);
+    }
+
+    void execute() {
+        std::map<HashType, std::tuple<fs::path, bool>> seen_hashes;
+
+        std::size_t fileCount = 0;
+
+        for (const auto& entry : fs::recursive_directory_iterator(m_rootPath, fs::directory_options::skip_permission_denied)) {
+            if (fs::is_regular_file(entry.status())) {
+                ++fileCount;
+            }
+        }
+
+        ProgressInit progressInit{};
+        progressInit.min = 0;
+        progressInit.max = fileCount;
+        m_progressCallback(EProgressState::SETBOUNDARY, &progressInit);
+
+
+        ProgressUpdate progressUpdate{};
+        std::size_t filesProcessed = 0;
+        for (const auto& entry : fs::recursive_directory_iterator(m_rootPath, fs::directory_options::skip_permission_denied)) {
+            if (isCanceled()) {
+                break;
+            }
+
+            if (entry.is_regular_file()) {
+                try {
+                    HashType hash;
+                    ComputeFileHash(entry.path(), hash);
+
+                    auto seen = seen_hashes.find(hash);
+                    if (seen != seen_hashes.end()) {
+                        auto& [path, is_seen] = seen->second;
+                        if (!is_seen) {
+                            m_insertCallback(path, hash);
+                            is_seen = true;
+                        }
+                        m_insertCallback(entry, hash);
+                    }
+                    else {
+                        seen_hashes[hash] = { entry, false };
+                    }
+                }
+                catch (const std::exception& e) {
+                    std::wstring error_message = convert_to_wstring(e.what());
+                    m_messageCallback(std::format(L"Error processing file {}: {}\r\n", entry.path().wstring(), error_message));
+                }
+            }
+            ++filesProcessed;
+            progressUpdate.position = filesProcessed;
+            m_progressCallback(EProgressState::UPDATE, &progressUpdate);
+        }
+
+        ::MessageBox(nullptr, L"Done!", L"Info", MB_OK | MB_ICONINFORMATION);
+    }
+
+private:
+    void ComputeFileHash(fs::path path, HashType& hash) {
+
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open file: " + path.string());
+        }
+
+        SHA256_CTX ctx;
+        SHA256_Init(&ctx);
+
+        constexpr size_t buffer_size = 8192;
+        char buffer[buffer_size];
+
+        // size_t total_read = 0;
+        while (file.read(buffer, buffer_size)) {
+            SHA256_Update(&ctx, buffer, file.gcount());
+        }
+        // Update for any remaining bytes
+        SHA256_Update(&ctx, buffer, file.gcount());
+
+        SHA256_Final(hash.data(), &ctx);
+
+        m_messageCallback(std::format(L"Hashing completed: {}\r\n", path.wstring()));
+    }
+
+private:
+    fs::path m_rootPath;
+    ProgressCallback m_progressCallback;
+    InsertCallback m_insertCallback;
+    MessageCallback m_messageCallback;
+};
 
 BOOL InitInstance(HINSTANCE hInstance) {
     return TRUE;
@@ -100,15 +370,8 @@ std::wstring SelectDirectory(HWND hwndOwner) {
     std::wstring folderPath;
 
     // Initialize COM
-    HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (FAILED(hr)) {
-        ::MessageBox(nullptr, L"Failed to initialize COM.", L"Error", MB_OK | MB_ICONERROR);
-        return folderPath;
-    }
-
-    // Create the File Open Dialog object
     IFileDialog* pFileDialog = nullptr;
-    hr = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileDialog));
+    HRESULT hr = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileDialog));
     if (SUCCEEDED(hr)) {
         // Set options to select folders
         DWORD dwOptions;
@@ -137,9 +400,6 @@ std::wstring SelectDirectory(HWND hwndOwner) {
 
         pFileDialog->Release();
     }
-
-    // Uninitialize COM
-    CoUninitialize();
 
     return folderPath;
 }
@@ -816,7 +1076,7 @@ class Window {
 public:
     virtual ~Window();
 
-    void Attach(HWND hwnd);
+    virtual void Attach(HWND hwnd);
     HWND Detach();
     void Destroy();
     BOOL IsWindow() const;
@@ -951,7 +1211,7 @@ public:
         SetHandle(image_list);
     }
 
-    int AddBitmap(HBITMAP bitmap, COLORREF mask) const {
+    virtual int AddBitmap(HBITMAP bitmap, COLORREF mask) {
         if (mask != CLR_NONE) {
             return ::ImageList_AddMasked(m_hImageList, bitmap, mask);
         }
@@ -987,12 +1247,114 @@ public:
         m_hImageList = image_list;
     }
 
-private:
+protected:
     HIMAGELIST m_hImageList;
+};
+
+class UniqueImageList : public ImageList {
+public:
+    int AddBitmap(HBITMAP hBitmap, COLORREF mask) override final {
+        BITMAP bm{};
+        if (!::GetObject(hBitmap, sizeof(BITMAP), &bm)) {
+            throw std::runtime_error("Failed to retrieve bitmap info.");
+        }
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = bm.bmWidth;
+        bmi.bmiHeader.biHeight = -bm.bmHeight;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = bm.bmBitsPixel;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        
+        size_t bitmapSize = bm.bmWidthBytes * bm.bmHeight;
+        // std::shared_ptr<uint8_t> pBits(new uint8_t[bitmapSize], std::default_delete<uint8_t[]>());
+        std::vector<unsigned char> bits(bitmapSize, 0);
+
+        HDC hdc = ::GetDC(HWND_DESKTOP);
+
+        if (!::GetDIBits(hdc, hBitmap, 0, bm.bmHeight, &bits[0], &bmi, DIB_RGB_COLORS)) {
+            ::ReleaseDC(nullptr, hdc);
+            throw std::runtime_error("Failed to retrieve bitmap bits.");
+        }
+
+        std::istringstream vectorStream(std::string(bits.begin(), bits.end()));
+        auto hash = compute_hash(vectorStream);
+        (void*)0;
+
+        auto item = m_cached.find(hash);
+        int index = -1;
+        if (item != m_cached.end()) {
+            index = item->second;
+        }
+        else {
+            index = mask != CLR_NONE ?
+                ::ImageList_AddMasked(m_hImageList, hBitmap, mask) :
+                ::ImageList_Add(m_hImageList, hBitmap, nullptr);
+
+            m_cached.insert({ hash, index });
+        }
+
+        return index;
+    }
+
+private:
+    std::map<std::wstring, int> m_cached;
+};
+
+class ProgressBar : public Window {
+public:
+    ProgressBar() {}
+
+    ProgressBar(HWND hwnd) {
+        SetHWND(hwnd);
+    }
+
+    virtual ~ProgressBar() {}
+
+    UINT GetPosition() {
+        return SendMessage(PBM_GETPOS, 0, 0);
+    }
+
+    void SetMarqueue(bool enabled) {
+        if (enabled) {
+            ModifyStyle(0, PBS_MARQUEE);
+        }
+        else {
+            ModifyStyle(PBS_MARQUEE, 0);
+        }
+
+        SendMessage(PBM_SETMARQUEE, enabled, 0);
+    }
+
+    UINT SetPosition(UINT position) {
+        return SendMessage(PBM_SETPOS, position, 0);
+    }
+
+    DWORD SetRange(UINT min, UINT max) {
+        return SendMessage(PBM_SETRANGE32, min, max);
+    }
+
+    UINT SetState(UINT state) {
+        return SendMessage(PBM_SETSTATE, state, 0);
+    }
 };
 
 class ListView : public Window {
 public:
+    virtual void InitListView() {
+        // Enable Explorer-style theme
+        SetExplorerTheme();
+
+        // Enable grouping in the ListView
+        ListView_SetExtendedListViewStyle(m_hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    }
+
+    void Attach(HWND hwnd) override {
+        Window::Attach(hwnd);
+        InitListView();
+    }
+
     int InsertColumn(int index, int width, int width_min, int align, PCWSTR text) {
         if (!(m_hwnd && ::IsWindow(m_hwnd))) {
             throw std::runtime_error("Invalid window handle");
@@ -1061,7 +1423,13 @@ public:
         if (text != nullptr)
             lvi.mask |= LVIF_TEXT;
 
+
+        // PostMessage(m_hwnd, LVM_INSERTITEM, 0, reinterpret_cast<WPARAM>(&lvi));
         return ListView_InsertItem(m_hwnd, &lvi);
+    }
+
+    HIMAGELIST GetImageList(int type = LVSIL_NORMAL) {
+        return ListView_GetImageList(m_hwnd, type);
     }
 
     void SetImageList(HIMAGELIST image_list, int type) {
@@ -1100,6 +1468,10 @@ public:
 
         ::SendMessage(m_hwnd, LVM_ENABLEGROUPVIEW, static_cast<BOOL>(flag), 0);
     }
+
+    void Clear() const {
+        ListView_DeleteAllItems(m_hwnd);
+    }
 };
 
 class Edit : public Window {
@@ -1109,25 +1481,34 @@ public:
         ::SendMessage(m_hwnd, EM_SETSEL, (WPARAM)len, (LPARAM)len);
         ::SendMessage(m_hwnd, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());
     }
+
+    void SetLimitText(int i) {
+        ::SendMessage(m_hwnd, EM_LIMITTEXT, static_cast<WPARAM>(i), 0);
+    }
 };
 
 class DuplicateFilesListView : public ListView {
+    static constexpr int LVM_ASYNCINSERTITEM = WM_USER + 1;
+
     int m_nextGroupId = 0;
     int m_nextItemId = 0;
 
-    ImageList m_imageList;
+    UniqueImageList m_imageList;
 public:
-    void Attach(HWND hwnd) {
-        ListView::Attach(hwnd);
-        InitListView();
-    }
+    int InsertHashGroup(const HashType& hash) {
 
-    int InsertDuplicateGroup(std::wstring hash) {
-        int insertedIndex = InsertGroup(m_nextGroupId, hash.c_str(), false, false);
+        std::wstringstream hash_stream;
+        for (unsigned char c : hash) {
+            hash_stream << std::setw(2) << std::setfill(L'0') << std::hex << static_cast<int>(c);
+        }
+
+        int insertedIndex = InsertGroup(m_nextGroupId, hash_stream.str().c_str(), false, false);
         if (insertedIndex >= 0)
             m_nextGroupId = insertedIndex + 1;
         return insertedIndex;
     }
+
+    HANDLE m_hInsertEvent;
 
     int InsertDuplicateFileItem(std::wstring path, int iGroupId) {
         SIZE size = { 96, 96 };
@@ -1138,7 +1519,8 @@ public:
             // Add the thumbnail to the ImageList
             int imageIndex = m_imageList.AddBitmap(hBitmap, CLR_NONE);
             ::DeleteObject(hBitmap);
-            insertedItem = InsertItem(m_nextItemId, iGroupId, imageIndex, -1, nullptr, path.c_str(), 0);
+
+            int insertedItem = InsertItem(m_nextItemId, iGroupId, imageIndex, -1, nullptr, path.c_str(), 0);
             if (insertedItem >= 0) {
                 m_nextItemId = insertedItem + 1;
             }
@@ -1220,22 +1602,58 @@ public:
         }
     }
 
+    bool AsyncInsertItem(LVITEM* lvi) {
+
+        LVITEM* lviCopy = new LVITEM;
+        memcpy(lviCopy, lvi, sizeof(LVITEM));
+        return ::PostMessage(m_hwnd, LVM_ASYNCINSERTITEM, 0, reinterpret_cast<WPARAM>(lviCopy));
+    }
+
+    bool AsyncInsertItem(int item, int group, int image, UINT column_count,
+        PUINT columns, LPCWSTR text, LPARAM lParam) {
+        LVITEM lvi{};
+        lvi.cColumns = column_count;
+        lvi.iGroupId = group;
+        lvi.iImage = image;
+        lvi.iItem = item;
+        lvi.lParam = lParam;
+        lvi.puColumns = columns;
+        lvi.pszText = const_cast<LPWSTR>(text);
+
+        if (column_count != 0)
+            lvi.mask |= LVIF_COLUMNS;
+        if (group > -1)
+            lvi.mask |= LVIF_GROUPID;
+        if (image > -1)
+            lvi.mask |= LVIF_IMAGE;
+        if (lParam != 0)
+            lvi.mask |= LVIF_PARAM;
+        if (text != nullptr)
+            lvi.mask |= LVIF_TEXT;
+
+
+        return AsyncInsertItem(&lvi);
+    }
+
     LRESULT WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) override final {
 
         switch (message) {
-
+        LVM_ASYNCINSERITEM: {
+            LVITEM* plvi = reinterpret_cast<LVITEM*>(lParam);
+            ListView_InsertItem(hwnd, plvi);
+            ::SetEvent(m_hInsertEvent);
+            delete plvi;
+        }    
+            return TRUE;
+            break;
         }
 
         return DefaultWndProc(hwnd, message, wParam, lParam);
     }
 
 private:
-    void InitListView() {
-        // Enable Explorer-style theme
-        SetExplorerTheme();
-
-        // Enable grouping in the ListView
-        ListView_SetExtendedListViewStyle(m_hwnd, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    void InitListView() override final {
+        ListView::InitListView();
 
         EnableGroupView(true);
 
@@ -1248,19 +1666,120 @@ private:
     }
 };
 
+fs::path GetAppDataPath() {
+    PCWSTR pszAppData = _wgetenv(L"APPDATA");
+    if (!pszAppData) {
+        throw std::runtime_error("APPDATA environment variable is not set");
+    }
+
+    fs::path appDataPath = pszAppData;
+    appDataPath /= L"Aragajaga";
+    appDataPath /= L"Dupfinder";
+
+    if (!fs::exists(appDataPath)) {
+        fs::create_directories(appDataPath);
+    }
+
+    return appDataPath;
+}
+
+struct Settings {
+    std::wstring m_lastPath;
+} g_settings;
+
+char g_magic[] = "AJDF\xFFSUCKITLEAGUE";
+
+void SaveSettings() {
+    auto appDataPath = GetAppDataPath();
+
+    std::fstream settingsFile(appDataPath / L"settings.dat", std::ios::binary | std::ios::out);
+    if (settingsFile) {
+
+        // Write magic
+        settingsFile.write(g_magic, sizeof(g_magic) / sizeof(*g_magic) - 1);
+
+        // Write last path
+        auto& lastPath = g_settings.m_lastPath;
+        uint16_t strSize = lastPath.length();
+        settingsFile.write(reinterpret_cast<char*>(&strSize), sizeof(strSize));
+        if (strSize) {
+            settingsFile.write(reinterpret_cast<char*>(&lastPath[0]), strSize * sizeof(lastPath[0]));
+        }
+    }
+}
+
+void ReadSettings() {
+    auto appDataPath = GetAppDataPath();
+
+    std::fstream settingsFile(appDataPath / L"settings.dat", std::ios::binary | std::ios::in);
+    if (settingsFile) {
+        char buffer[sizeof(g_magic) - 1]{};
+        settingsFile.read(buffer, sizeof(g_magic) - 1);
+
+        if (!memcmp(buffer, g_magic, sizeof(g_magic) - 1)) {
+            uint16_t strSize;
+            settingsFile.read(reinterpret_cast<char*>(&strSize), sizeof(strSize));
+
+            std::wstring lastPath(strSize, L'\0');
+            settingsFile.read(reinterpret_cast<char*>(&lastPath[0]), strSize * sizeof(lastPath[0]));
+
+            g_settings.m_lastPath = lastPath;
+        }
+        else {
+            ::MessageBox(nullptr, L"Invalid settings file", nullptr, MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
+class ImageListDlg : public Dialog {
+public:
+    ImageListDlg(ListView& listView) {
+        m_hImageList = listView.GetImageList();
+    }
+
+private:
+    BOOL OnInitDialog() override final {
+        BOOL bBool = Dialog::OnInitDialog();
+        m_listView.Attach(GetDlgItem(IDC_LIST1));
+        m_listView.InsertColumn(0, 200, 200, LVCFMT_LEFT, L"Item");
+        // m_listView.SetView(LVS_REPORT);
+        m_listView.SetImageList(m_hImageList, LVSIL_NORMAL);
+
+        int imageCount = ImageList_GetImageCount(m_hImageList);
+        for (size_t i = 0; i < imageCount; ++i) {
+            m_listView.InsertItem(i, -1, i, 0, nullptr, L"Item", 0);
+        }
+
+        return bBool;
+    }
+
+    HIMAGELIST m_hImageList;
+    ListView m_listView;
+};
+
 class MainDlg : public Dialog {
 private:
 
     BOOL OnInitDialog() override final {
         Dialog::OnInitDialog();
 
+        ReadSettings();
+
         HICON hIcon = ::LoadIcon(::GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_ICON1));
         SendMessage(WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
         SendMessage(WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
 
         m_editPath.Attach(GetDlgItem(IDC_EDIT1));
+        m_editPath.SetText(g_settings.m_lastPath);
+
         m_editLog.Attach(GetDlgItem(IDC_EDIT2));
+        m_editLog.SetLimitText(-1);
+
         m_listView.Attach(GetDlgItem(IDC_LIST1));
+
+        m_progressBar.Attach(GetDlgItem(IDC_PROGRESS1));
+        m_progressBar.SetRange(0, 100);
+        m_progressBar.SetPosition(50);
 
         g_fileWatcher.SetCallback([=](fs::path path) -> void {
             // Find the item in the ListView
@@ -1289,13 +1808,70 @@ private:
         return TRUE;
     }
 
+    void OnCancelTasksBtnClick() {
+        g_taskPool.cancelAllTasks();
+        m_listView.Clear();
+        m_listViewHashGroups.clear();
+    }
+
+    void OnDuplicatesBtnClick() {
+        m_listView.Clear();
+        m_listViewHashGroups.clear();
+
+        std::wstring selectedFolder = m_editPath.GetText();
+
+        g_taskPool.submitTask(std::make_shared<FindDuplicateTask>(
+            selectedFolder,
+            [&](FindDuplicateTask::EProgressState state, FindDuplicateTask::IProgressData* pData) {
+                switch (state) {
+                case FindDuplicateTask::EProgressState::SETBOUNDARY: {
+                    FindDuplicateTask::ProgressInit* pBoundaryData = static_cast<FindDuplicateTask::ProgressInit*>(pData);
+                    m_progressBar.SetRange(pBoundaryData->min, pBoundaryData->max);
+                    break;
+                }
+
+                case FindDuplicateTask::EProgressState::UPDATE:
+                    FindDuplicateTask::ProgressUpdate* pUpdateData = static_cast<FindDuplicateTask::ProgressUpdate*>(pData);
+                    m_progressBar.SetPosition(pUpdateData->position);
+                    break;
+                }
+            },
+            [&](fs::path path, const HashType& hash) {
+                auto group = m_listViewHashGroups.find(hash);
+                if (group != m_listViewHashGroups.end()) {
+                    g_fileWatcher.AddFile(path);
+                    m_listView.InsertDuplicateFileItem(path, group->second);
+                }
+                else {
+                    int groupId = m_listView.InsertHashGroup(hash);
+                    m_listViewHashGroups.insert({ hash, groupId });
+                    g_fileWatcher.AddFile(path);
+                    m_listView.InsertDuplicateFileItem(path, groupId);
+                }
+            },
+            [&](std::wstring message) {
+                m_editLog.AppendText(message);
+            }
+        ));
+    }
+
     BOOL OnCommand(WPARAM wParam, LPARAM lParam) override final {
         switch (LOWORD(wParam)) {
+        case ID_DEBUG_VIEWLISTVIEWTHUMBNAILIMAGELIST:
+        {
+            ImageListDlg dlg(m_listView);
+            dlg.Create(IDD_DIALOG2, nullptr, true);
+            return TRUE;
+        }
+            break;
+
         case IDC_BUTTON1:
             if (HIWORD(wParam) == BN_CLICKED) {
 
                 auto selectedFolder = ::SelectDirectory(m_hwnd);
                 if (!selectedFolder.empty()) {
+                    g_settings.m_lastPath = selectedFolder;
+                    SaveSettings();
                     m_editPath.SetText(selectedFolder);
                 }
                 return TRUE;
@@ -1303,23 +1879,17 @@ private:
             }
             break;
 
-        case IDC_BUTTON2:
+        case IDC_CANCELTASKSBTN:
             if (HIWORD(wParam) == BN_CLICKED) {
-                std::wstring selectedFolder = m_editPath.GetText();
-                auto duplicates = find_duplicate_files(selectedFolder, [&](std::wstring message) {
-                    m_editLog.AppendText(message);
-                    });
-
-                for (const auto& [hash, files] : duplicates) {
-                    int groupId = m_listView.InsertDuplicateGroup(hash);
-                    for (const auto& file : files) {
-                        g_fileWatcher.AddFile(file);
-                        m_listView.InsertDuplicateFileItem(file, groupId);
-                    }
-                }
-
+                OnCancelTasksBtnClick();
                 return TRUE;
-                break;
+            }
+            break;
+
+        case IDC_FINDDUPLICATESBTN:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                OnDuplicatesBtnClick();
+                return TRUE;
             }
             break;
 
@@ -1387,8 +1957,11 @@ private:
     }
 
     DuplicateFilesListView m_listView;
+    std::map<HashType, int> m_listViewHashGroups;
     Edit m_editPath;
     Edit m_editLog;
+    ProgressBar m_progressBar;
+    
 };
 
 std::wstring CharToWChar(const std::string& str) {
@@ -1411,10 +1984,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLi
 
     // std::locale::global(std::locale("en_US.UTF-8"));
 
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     INITCOMMONCONTROLSEX iccex{};
     iccex.dwSize = sizeof(iccex);
     iccex.dwICC = ICC_LISTVIEW_CLASSES;
     ::InitCommonControlsEx(&iccex);
+
+    
 
     MSG msg{};
 
@@ -1435,6 +2012,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLi
         std::string message = e.what();
         ::MessageBoxA(nullptr, message.c_str(), nullptr, MB_OK | MB_ICONERROR);
     }
+
+    ::CoUninitialize();
 
     return static_cast<int>(msg.wParam);
 }
