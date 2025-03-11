@@ -1203,7 +1203,7 @@ class ImageList {
 public:
     ImageList() : m_hImageList(nullptr) {};
 
-    ~ImageList() {
+    virtual ~ImageList() {
         Destroy();
     };
 
